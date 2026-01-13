@@ -61,11 +61,41 @@ async function extractCell(blob, cellIndex, gridWidth, gridHeight) {
  * Crop an image blob to the specified bounds
  * Returns a new blob containing the cropped image
  */
-async function cropImage(blob, bounds) {
+async function cropImage(fileOrBlob, bounds) {
     return new Promise((resolve, reject) => {
         const img = new Image();
         
         const processImage = () => {
+            // Validate bounds
+            if (bounds.width <= 0 || bounds.height <= 0) {
+                reject(new Error(`Invalid crop bounds: ${bounds.width}x${bounds.height}`));
+                return;
+            }
+            
+            if (bounds.x < 0 || bounds.y < 0 || 
+                bounds.x + bounds.width > img.width || 
+                bounds.y + bounds.height > img.height) {
+                console.warn('Crop bounds extend beyond image, clamping...', {
+                    bounds,
+                    imageSize: { width: img.width, height: img.height }
+                });
+                // Clamp bounds to image dimensions
+                const clampedX = Math.max(0, Math.min(bounds.x, img.width - 1));
+                const clampedY = Math.max(0, Math.min(bounds.y, img.height - 1));
+                const clampedWidth = Math.min(bounds.width, img.width - clampedX);
+                const clampedHeight = Math.min(bounds.height, img.height - clampedY);
+                
+                if (clampedWidth <= 0 || clampedHeight <= 0) {
+                    reject(new Error(`Invalid clamped crop bounds: ${clampedWidth}x${clampedHeight}`));
+                    return;
+                }
+                
+                bounds.x = clampedX;
+                bounds.y = clampedY;
+                bounds.width = clampedWidth;
+                bounds.height = clampedHeight;
+            }
+            
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             
@@ -85,20 +115,32 @@ async function cropImage(blob, bounds) {
                 if (croppedBlob) {
                     resolve(croppedBlob);
                 } else {
-                    reject(new Error('Failed to crop image'));
+                    reject(new Error(`Failed to convert canvas to blob. Canvas size: ${canvas.width}x${canvas.height}`));
                 }
             }, 'image/png');
         };
         
         img.onerror = () => reject(new Error('Failed to load image for cropping'));
         
-        // Load image from blob
-        const objectUrl = URL.createObjectURL(blob);
-        img.onload = () => {
-            processImage();
-            URL.revokeObjectURL(objectUrl);
-        };
-        img.src = objectUrl;
+        // Load image from file or blob
+        // If it's already a blob, create object URL; otherwise use FileReader
+        if (fileOrBlob instanceof Blob && !(fileOrBlob instanceof File)) {
+            // It's a blob, create object URL
+            const objectUrl = URL.createObjectURL(fileOrBlob);
+            img.onload = () => {
+                processImage();
+                URL.revokeObjectURL(objectUrl); // Clean up after loading
+            };
+            img.src = objectUrl;
+        } else {
+            // It's a File, use FileReader
+            img.onload = processImage;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(fileOrBlob);
+        }
     });
 }
 
@@ -140,6 +182,21 @@ async function preprocessImageForOCR(file) {
                     pixels[i + 2] = 255 - pixels[i + 2]; // Blue
                     // Alpha channel stays the same
                 }
+            }
+            
+            // Convert to grayscale (black and white) for better OCR
+            for (let i = 0; i < pixels.length; i += 4) {
+                // Calculate grayscale value using luminance formula
+                const gray = Math.round(
+                    pixels[i] * 0.299 + 
+                    pixels[i + 1] * 0.587 + 
+                    pixels[i + 2] * 0.114
+                );
+                // Set all RGB channels to the same grayscale value
+                pixels[i] = gray;     // Red
+                pixels[i + 1] = gray; // Green
+                pixels[i + 2] = gray; // Blue
+                // Alpha channel stays the same
             }
             
             // Put processed image data back
@@ -280,6 +337,8 @@ async function detectGridBounds(fileOrBlob) {
                 y: pixelMinY,
                 width: pixelMaxX - pixelMinX,
                 height: pixelMaxY - pixelMinY,
+                imageWidth: width,
+                imageHeight: height,
             });
         };
         

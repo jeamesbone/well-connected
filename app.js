@@ -194,16 +194,38 @@ async function processImage(file) {
             throw new Error('OCR library not loaded. Please check your internet connection.');
         }
 
-        elements.statusText.textContent = 'Preprocessing image...';
-        
-        // Preprocess image: convert dark mode to light mode for better OCR
-        const { blob, dataUrl } = await preprocessImageForOCR(file);
-
         elements.statusText.textContent = 'Detecting grid...';
         
-        // Detect the grid region on the preprocessed image
-        const gridBounds = await detectGridBounds(blob);
-        console.log('Detected grid bounds:', gridBounds);
+        // Detect the grid region on the original image
+        const detectedBounds = await detectGridBounds(file);
+        console.log('Detected grid bounds:', detectedBounds);
+        
+        // Add padding to cover missed edges
+        const padding = 20;
+        const imageWidth = detectedBounds.imageWidth || detectedBounds.width + detectedBounds.x;
+        const imageHeight = detectedBounds.imageHeight || detectedBounds.height + detectedBounds.y;
+        
+        const paddedX = Math.max(0, detectedBounds.x - padding);
+        const paddedY = Math.max(0, detectedBounds.y - padding);
+        const paddedWidth = Math.min(
+            detectedBounds.width + (padding * 2),
+            imageWidth - paddedX
+        );
+        const paddedHeight = Math.min(
+            detectedBounds.height + (padding * 2),
+            imageHeight - paddedY
+        );
+        
+        const gridBounds = {
+            x: paddedX,
+            y: paddedY,
+            width: paddedWidth,
+            height: paddedHeight,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight
+        };
+        
+        console.log('Grid bounds with padding:', gridBounds);
         
         // Store grid bounds for debug toggle
         state.lastGridBounds = gridBounds;
@@ -213,45 +235,86 @@ async function processImage(file) {
 
         elements.statusText.textContent = 'Cropping image...';
         
-        // Crop the image to the grid bounds
-        const croppedBlob = await cropImage(blob, gridBounds);
+        // Crop the image to the grid bounds (with padding)
+        const croppedBlob = await cropImage(file, gridBounds);
 
+        elements.statusText.textContent = 'Initializing OCR...';
+
+        // Create Tesseract worker
+        const { createWorker } = Tesseract;
+        const worker = await createWorker('eng');
+        
         elements.statusText.textContent = 'Reading text...';
 
-        // OCR each cell individually (4x4 grid = 16 cells)
+        // Calculate cell dimensions
+        const cellWidth = gridBounds.width / 4;
+        const cellHeight = gridBounds.height / 4;
+        console.log('[OCR] Cropped grid dimensions:', gridBounds.width, 'x', gridBounds.height);
+        console.log('[OCR] Cell dimensions:', cellWidth.toFixed(1), 'x', cellHeight.toFixed(1));
+        
+        // Run OCR on each cell individually using rectangle option
         const words = [];
         const totalCells = 16;
+        state.detectedWords = [];
         
         for (let i = 0; i < totalCells; i++) {
-            const progress = Math.round((i / totalCells) * 100);
+            const progress = Math.round(((i + 1) / totalCells) * 100);
             elements.statusText.textContent = `Reading text... ${progress}%`;
             
-            // Extract individual cell
-            const cellBlob = await extractCell(croppedBlob, i, gridBounds.width, gridBounds.height);
+            const row = Math.floor(i / 4);
+            const col = i % 4;
+            const cellX = col * cellWidth;
+            const cellY = row * cellHeight;
             
-            // Run OCR on the cell
-            const result = await Tesseract.recognize(cellBlob, 'eng', {
-                logger: (m) => {
-                    // Silent - we show progress at cell level
+            // Shrink rectangle by 10px on all sides to remove borders
+            const borderPadding = 10;
+            const rectX = cellX + borderPadding;
+            const rectY = cellY + borderPadding;
+            const rectWidth = cellWidth - (borderPadding * 2);
+            const rectHeight = cellHeight - (borderPadding * 2);
+            
+            console.log(`[Cell ${i + 1}/16 (Row ${row + 1}, Col ${col + 1})] Starting OCR at rectangle (${rectX.toFixed(1)}, ${rectY.toFixed(1)}, ${rectWidth.toFixed(1)}, ${rectHeight.toFixed(1)})...`);
+            
+            // Run OCR on this specific cell using rectangle option
+            const { data: result } = await worker.recognize(croppedBlob, {
+                rectangle: {
+                    top: rectY,
+                    left: rectX,
+                    width: rectWidth,
+                    height: rectHeight
                 }
             });
             
             // Extract all words from this cell and concatenate them
             let cellWords = [];
             
-            if (result.data.words && result.data.words.length > 0) {
+            if (result.words && result.words.length > 0) {
+                console.log(`[Cell ${i + 1}/16] Found ${result.words.length} word(s):`, result.words.map(w => w.text));
                 // Collect all words from the cell
-                for (const word of result.data.words) {
+                for (const word of result.words) {
                     const cleaned = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
                     if (cleaned.length >= 2) {
                         cellWords.push(cleaned.toUpperCase());
+                    }
+                    // Store for debug overlay (adjust bbox to be relative to full cropped image)
+                    if (word.bbox) {
+                        state.detectedWords.push({
+                            text: cleaned.toUpperCase(),
+                            bbox: {
+                                x0: word.bbox.x0 + rectX,
+                                y0: word.bbox.y0 + rectY,
+                                x1: word.bbox.x1 + rectX,
+                                y1: word.bbox.y1 + rectY
+                            }
+                        });
                     }
                 }
             }
             
             // Fallback: try lines if no words found
-            if (cellWords.length === 0 && result.data.lines && result.data.lines.length > 0) {
-                for (const line of result.data.lines) {
+            if (cellWords.length === 0 && result.lines && result.lines.length > 0) {
+                console.log(`[Cell ${i + 1}/16] No words found, trying lines:`, result.lines.map(l => l.text));
+                for (const line of result.lines) {
                     if (line.text) {
                         const cleaned = line.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
                         if (cleaned.length >= 2) {
@@ -263,8 +326,12 @@ async function processImage(file) {
             
             // Concatenate all words with spaces
             const cellWord = cellWords.join(' ');
+            console.log(`[Cell ${i + 1}/16] Final result: "${cellWord}"`);
             words.push(cellWord);
         }
+        
+        // Terminate worker
+        await worker.terminate();
         
         elements.statusText.textContent = 'Extracting tiles...';
         
@@ -372,6 +439,55 @@ function drawDebugOverlay(gridBounds) {
                 ctx.fillText(word.text, wordX + 2, wordY - 2);
             }
         }
+    }
+    
+    // Draw cell boundaries (4x4 grid = 16 cells)
+    const gridX = gridBounds.x * scaleX;
+    const gridY = gridBounds.y * scaleY;
+    const gridW = gridBounds.width * scaleX;
+    const gridH = gridBounds.height * scaleY;
+    const cellW = gridW / 4;
+    const cellH = gridH / 4;
+    
+    ctx.strokeStyle = '#3498db'; // Blue
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]); // Dashed lines
+    
+    // Draw vertical lines (3 lines to divide into 4 columns)
+    for (let i = 1; i < 4; i++) {
+        const x = gridX + (i * cellW);
+        ctx.beginPath();
+        ctx.moveTo(x, gridY);
+        ctx.lineTo(x, gridY + gridH);
+        ctx.stroke();
+    }
+    
+    // Draw horizontal lines (3 lines to divide into 4 rows)
+    for (let i = 1; i < 4; i++) {
+        const y = gridY + (i * cellH);
+        ctx.beginPath();
+        ctx.moveTo(gridX, y);
+        ctx.lineTo(gridX + gridW, y);
+        ctx.stroke();
+    }
+    
+    // Draw cell numbers (optional, for easier identification)
+    ctx.fillStyle = '#3498db';
+    ctx.font = 'bold 12px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    for (let i = 0; i < 16; i++) {
+        const row = Math.floor(i / 4);
+        const col = i % 4;
+        const cellX = gridX + (col * cellW) + (cellW / 2);
+        const cellY = gridY + (row * cellH) + (cellH / 2);
+        
+        // Draw cell number with background for visibility
+        ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
+        ctx.fillRect(cellX - 15, cellY - 8, 30, 16);
+        ctx.fillStyle = '#3498db';
+        ctx.fillText((i + 1).toString(), cellX, cellY);
     }
 }
 

@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Processing Test Harness</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            background: white;
+            margin-bottom: 20px;
+            cursor: pointer;
+        }
+
+        .upload-area:hover {
+            border-color: #666;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .results {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .result-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .result-panel h2 {
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+            color: #333;
+        }
+
+        .result-panel img,
+        .result-panel canvas {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            display: block;
+            width: 100%;
+            object-fit: contain;
+        }
+
+        .info {
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #666;
+        }
+
+        .info pre {
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 0.85rem;
+        }
+
+        .status {
+            padding: 10px;
+            background: #e3f2fd;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: #1976D2;
+        }
+
+        .controls {
+            margin-bottom: 20px;
+        }
+
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Image Processing Test Harness</h1>
+        
+        <div class="upload-area" id="uploadArea">
+            <p>Click to upload an image</p>
+            <input type="file" id="fileInput" accept="image/*">
+        </div>
+
+        <div class="status" id="status">Ready</div>
+
+        <div class="controls" id="controls" hidden>
+            <button id="testGridDetection">Test Grid Detection</button>
+            <button id="testFullPipeline">Test Full Pipeline</button>
+        </div>
+
+        <div class="results" id="results"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="image-processing.js"></script>
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const status = document.getElementById('status');
+        const controls = document.getElementById('controls');
+        const results = document.getElementById('results');
+        let currentFile = null;
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                currentFile = e.target.files[0];
+                status.textContent = `Loaded: ${currentFile.name}`;
+                controls.hidden = false;
+                results.innerHTML = '';
+            }
+        });
+
+        document.getElementById('testGridDetection').addEventListener('click', async () => {
+            if (!currentFile) return;
+            status.textContent = 'Testing grid detection...';
+            try {
+                const gridBounds = await detectGridBounds(currentFile);
+                addResult('Grid Detection', currentFile, gridBounds);
+                status.textContent = `Grid detected: ${gridBounds.width}x${gridBounds.height} at (${gridBounds.x}, ${gridBounds.y})`;
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                console.error(error);
+            }
+        });
+
+        document.getElementById('testFullPipeline').addEventListener('click', async () => {
+            if (!currentFile) return;
+            status.textContent = 'Testing full pipeline...';
+            results.innerHTML = '';
+            try {
+                // Step 1: Show original
+                addResult('1. Original', currentFile);
+
+                // Step 2: Detect grid
+                status.textContent = 'Step 2/4: Detecting grid...';
+                const gridBounds = await detectGridBounds(currentFile);
+                addResult('2. Grid Detection', currentFile, gridBounds);
+
+                // Step 3: Add padding to grid bounds
+                status.textContent = 'Step 3/4: Adding padding...';
+                const padding = 20;
+                const paddedX = Math.max(0, gridBounds.x - padding);
+                const paddedY = Math.max(0, gridBounds.y - padding);
+                const paddedWidth = Math.min(
+                    gridBounds.width + (padding * 2),
+                    gridBounds.imageWidth - paddedX
+                );
+                const paddedHeight = Math.min(
+                    gridBounds.height + (padding * 2),
+                    gridBounds.imageHeight - paddedY
+                );
+                const paddedBounds = {
+                    x: paddedX,
+                    y: paddedY,
+                    width: paddedWidth,
+                    height: paddedHeight,
+                    imageWidth: gridBounds.imageWidth,
+                    imageHeight: gridBounds.imageHeight
+                };
+
+                // Step 4: Crop
+                status.textContent = 'Step 4/4: Cropping and running OCR...';
+                const croppedBlob = await cropImage(currentFile, paddedBounds);
+                const croppedUrl = URL.createObjectURL(croppedBlob);
+                addResult('3. Cropped Grid', croppedUrl);
+                // Calculate cell dimensions
+                const cellWidth = paddedBounds.width / 4;
+                const cellHeight = paddedBounds.height / 4;
+                console.log('[OCR] Cropped grid dimensions:', paddedBounds.width, 'x', paddedBounds.height);
+                console.log('[OCR] Cell dimensions:', cellWidth.toFixed(1), 'x', cellHeight.toFixed(1));
+
+                // Create Tesseract worker
+                status.textContent = 'Step 4/4: Initializing OCR...';
+                const { createWorker } = Tesseract;
+                const worker = await createWorker('eng');
+
+                // Run OCR on each cell individually using rectangle option
+                const words = [];
+                const totalCells = 16;
+                
+                for (let i = 0; i < totalCells; i++) {
+                    const progress = Math.round(((i + 1) / totalCells) * 100);
+                    status.textContent = `Step 4/4: Running OCR... ${progress}%`;
+                    
+                    const row = Math.floor(i / 4);
+                    const col = i % 4;
+                    const cellX = col * cellWidth;
+                    const cellY = row * cellHeight;
+                    
+                    // Shrink rectangle by 10px on all sides to remove borders
+                    const borderPadding = 20;
+                    const rectX = cellX + borderPadding;
+                    const rectY = cellY + borderPadding;
+                    const rectWidth = cellWidth - (borderPadding * 2);
+                    const rectHeight = cellHeight - (borderPadding * 2);
+                    
+                    console.log(`[Cell ${i + 1}/16 (Row ${row + 1}, Col ${col + 1})] Starting OCR at rectangle (${rectX.toFixed(1)}, ${rectY.toFixed(1)}, ${rectWidth.toFixed(1)}, ${rectHeight.toFixed(1)})...`);
+                    
+                    // Run OCR on this specific cell using rectangle option
+                    const { data: ocrResult } = await worker.recognize(croppedBlob, {
+                        rectangle: {
+                            top: rectY,
+                            left: rectX,
+                            width: rectWidth,
+                            height: rectHeight
+                        },
+                    });
+                    
+                    // Extract all words from this cell and concatenate them
+                    let cellWords = [];
+                    
+                    if (!ocrResult || !ocrResult.words || ocrResult.words.length === 0) {
+                        console.log(`[Cell ${i + 1}/16] No OCR result`);
+                        continue;
+                    }
+
+                    console.log(`[Cell ${i + 1}/16] Found ${ocrResult.words.length} word(s):`, ocrResult.words.map(w => w.text));
+                    // Collect all words from the cell
+                    for (const word of ocrResult.words) {
+                        const cleaned = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
+                        if (cleaned.length >= 2) {
+                            cellWords.push(cleaned.toUpperCase());
+                        }
+                    }
+                    
+                    // Concatenate all words with spaces
+                    const cellWord = cellWords.join(' ');
+                    console.log(`[Cell ${i + 1}/16] Final result: "${cellWord}"`);
+                    words.push(cellWord);
+                }
+                
+                // Terminate worker
+                await worker.terminate();
+
+                // Show OCR results
+                const ocrPanel = document.createElement('div');
+                ocrPanel.className = 'result-panel';
+                ocrPanel.style.gridColumn = '1 / -1';
+                const ocrTitle = document.createElement('h2');
+                ocrTitle.textContent = '4. OCR Results';
+                ocrPanel.appendChild(ocrTitle);
+                
+                const ocrInfo = document.createElement('div');
+                ocrInfo.className = 'info';
+                ocrInfo.innerHTML = `<pre>Total words detected: ${words.length || 0}\n\nCell assignments:\n${words.map((word, i) => {
+                    const row = Math.floor(i / 4) + 1;
+                    const col = (i % 4) + 1;
+                    return `Cell ${i + 1} (Row ${row}, Col ${col}): "${word || '(empty)'}"`;
+                }).join('\n')}</pre>`;
+                ocrPanel.appendChild(ocrInfo);
+                results.appendChild(ocrPanel);
+
+                status.textContent = 'Full pipeline complete!';
+            } catch (error) {
+                status.textContent = `Error: ${error.message}`;
+                console.error(error);
+            }
+        });
+
+        function addResult(title, imageSource, gridBounds = null) {
+            const panel = document.createElement('div');
+            panel.className = 'result-panel';
+            
+            const h2 = document.createElement('h2');
+            h2.textContent = title;
+            panel.appendChild(h2);
+
+            const img = document.createElement('img');
+            if (typeof imageSource === 'string') {
+                img.src = imageSource;
+            } else {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(imageSource);
+            }
+            panel.appendChild(img);
+
+            if (gridBounds) {
+                const info = document.createElement('div');
+                info.className = 'info';
+                info.innerHTML = `<pre>${JSON.stringify(gridBounds, null, 2)}</pre>`;
+                panel.appendChild(info);
+
+                // Draw grid bounds overlay
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    // Use natural dimensions for canvas, but limit display size
+                    canvas.width = img.naturalWidth || img.width;
+                    canvas.height = img.naturalHeight || img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    
+                    // Draw bounding box
+                    ctx.strokeStyle = '#c45c3a';
+                    ctx.lineWidth = 3;
+                    ctx.setLineDash([8, 4]);
+                    ctx.strokeRect(gridBounds.x, gridBounds.y, gridBounds.width, gridBounds.height);
+                    
+                    // Draw cell boundaries (4x4 grid = 16 cells)
+                    const cellW = gridBounds.width / 4;
+                    const cellH = gridBounds.height / 4;
+                    
+                    ctx.strokeStyle = '#3498db'; // Blue
+                    ctx.lineWidth = 1;
+                    ctx.setLineDash([4, 4]); // Dashed lines
+                    
+                    // Draw vertical lines (3 lines to divide into 4 columns)
+                    for (let i = 1; i < 4; i++) {
+                        const x = gridBounds.x + (i * cellW);
+                        ctx.beginPath();
+                        ctx.moveTo(x, gridBounds.y);
+                        ctx.lineTo(x, gridBounds.y + gridBounds.height);
+                        ctx.stroke();
+                    }
+                    
+                    // Draw horizontal lines (3 lines to divide into 4 rows)
+                    for (let i = 1; i < 4; i++) {
+                        const y = gridBounds.y + (i * cellH);
+                        ctx.beginPath();
+                        ctx.moveTo(gridBounds.x, y);
+                        ctx.lineTo(gridBounds.x + gridBounds.width, y);
+                        ctx.stroke();
+                    }
+                    
+                    // Draw cell numbers (optional, for easier identification)
+                    ctx.fillStyle = '#3498db';
+                    ctx.font = 'bold 12px system-ui, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    
+                    for (let i = 0; i < 16; i++) {
+                        const row = Math.floor(i / 4);
+                        const col = i % 4;
+                        const cellX = gridBounds.x + (col * cellW) + (cellW / 2);
+                        const cellY = gridBounds.y + (row * cellH) + (cellH / 2);
+                        
+                        // Draw cell number with background for visibility
+                        ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
+                        ctx.fillRect(cellX - 15, cellY - 8, 30, 16);
+                        ctx.fillStyle = '#3498db';
+                        ctx.fillText((i + 1).toString(), cellX, cellY);
+                    }
+                    
+                    // Replace img with canvas
+                    canvas.style.maxWidth = '100%';
+                    canvas.style.width = '100%';
+                    canvas.style.height = 'auto';
+                    canvas.style.objectFit = 'contain';
+                    canvas.style.border = '1px solid #ddd';
+                    canvas.style.borderRadius = '4px';
+                    panel.replaceChild(canvas, img);
+                };
+            }
+
+            results.appendChild(panel);
+        }
+    </script>
+</body>
+</html>
+
