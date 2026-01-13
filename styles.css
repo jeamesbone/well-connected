@@ -76,7 +76,7 @@ body {
 .app {
     max-width: 720px;
     margin: 0 auto;
-    padding: var(--space-lg);
+    padding: var(--space-md) var(--space-sm);
     min-height: 100vh;
     display: flex;
     flex-direction: column;
@@ -255,6 +255,29 @@ body {
     flex-shrink: 0;
 }
 
+
+/* Help button */
+.btn-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon:hover {
+    background: var(--border-color);
+    color: var(--text-primary);
+}
+
 /* Status Section */
 .status-section {
     padding: var(--space-xl) 0;
@@ -305,12 +328,26 @@ body {
     justify-content: space-between;
     align-items: center;
     margin-bottom: var(--space-lg);
-    flex-wrap: wrap;
+}
+
+.controls-left,
+.controls-right {
+    flex: 1;
+    display: flex;
+}
+
+.controls-left {
+    justify-content: flex-start;
+}
+
+.controls-right {
+    justify-content: flex-end;
     gap: var(--space-md);
 }
 
 .color-palette {
     display: flex;
+    justify-content: center;
     align-items: center;
     gap: var(--space-sm);
 }
@@ -402,9 +439,9 @@ body {
 .tile:active,
 .tile.dragging {
     cursor: grabbing;
-    transform: scale(1.05);
-    box-shadow: 0 8px 24px var(--shadow-color);
-    z-index: 10;
+    opacity: 0.3;
+    transform: scale(0.95);
+    box-shadow: none;
 }
 
 .tile.drag-over {
@@ -416,6 +453,13 @@ body {
 .tile[data-draft-color="green"] { background: var(--green-soft); border: 2px solid var(--green); }
 .tile[data-draft-color="blue"] { background: var(--blue-soft); border: 2px solid var(--blue); }
 .tile[data-draft-color="purple"] { background: var(--purple-soft); border: 2px solid var(--purple); }
+
+/* Selected tile */
+.tile.selected {
+    outline: 3px solid var(--accent);
+    outline-offset: -3px;
+    box-shadow: 0 0 0 2px var(--bg-card), 0 4px 12px var(--shadow-color);
+}
 
 .tile-empty {
     background: var(--bg-primary);
@@ -549,22 +593,30 @@ body {
     box-sizing: border-box;
 }
 
-/* Instructions */
-.instructions {
-    margin-top: var(--space-lg);
-    padding: var(--space-md);
-    background: var(--bg-secondary);
-    border-radius: 10px;
-    text-align: center;
+/* Help Modal */
+.modal-help h2 {
+    font-family: var(--font-display);
+    margin-bottom: var(--space-md);
 }
 
-.instructions p {
-    font-size: 0.85rem;
+.help-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.help-list li {
+    padding: var(--space-sm) 0;
+    border-bottom: 1px solid var(--border-color);
     color: var(--text-secondary);
 }
 
-.instructions strong {
-    color: var(--accent);
+.help-list li:last-child {
+    border-bottom: none;
+}
+
+.help-list strong {
+    color: var(--text-primary);
 }
 
 /* Definition Modal */

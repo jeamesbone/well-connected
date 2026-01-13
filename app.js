@@ -7,7 +7,7 @@
 const state = {
     tiles: [],
     scratchpad: [null, null, null, null], // 4 scratchpad slots
-    selectedColor: null,
+    selectedTiles: new Set(), // Set of "source:index" strings for selected tiles
     draggedTile: null,
     draggedSource: null // 'grid' or 'scratchpad'
 };
@@ -34,7 +34,10 @@ const elements = {
     modal: document.getElementById('definitionModal'),
     modalWord: document.getElementById('modalWord'),
     modalDefinition: document.getElementById('modalDefinition'),
-    modalClose: document.getElementById('modalClose')
+    modalClose: document.getElementById('modalClose'),
+    helpBtn: document.getElementById('helpBtn'),
+    helpModal: document.getElementById('helpModal'),
+    helpModalClose: document.getElementById('helpModalClose')
 };
 
 // Storage key
@@ -46,6 +49,7 @@ function init() {
     setupColorPalette();
     setupShuffleButton();
     setupModal();
+    setupHelpModal();
     setupScratchpad();
     loadSavedState();
 }
@@ -159,7 +163,7 @@ function resetUpload() {
     elements.gridSection.hidden = true;
     state.tiles = [];
     state.scratchpad = [null, null, null, null];
-    state.selectedColor = null;
+    state.selectedTiles.clear();
     
     // Clear saved state
     clearSavedState();
@@ -167,9 +171,6 @@ function resetUpload() {
     // Clear debug canvas
     const ctx = elements.debugCanvas.getContext('2d');
     ctx.clearRect(0, 0, elements.debugCanvas.width, elements.debugCanvas.height);
-    
-    // Reset color buttons
-    elements.colorBtns.forEach(btn => btn.classList.remove('active'));
 }
 
 // ==================== OCR Processing ====================
@@ -621,6 +622,12 @@ function createTileElement(tile, index, source) {
         tileEl.dataset.draftColor = tile.draftColor;
     }
     
+    // Check if tile is selected
+    const key = `${source}:${index}`;
+    if (state.selectedTiles.has(key)) {
+        tileEl.classList.add('selected');
+    }
+    
     // Drag events for reordering
     tileEl.addEventListener('dragstart', handleDragStart);
     tileEl.addEventListener('dragend', handleDragEnd);
@@ -628,18 +635,8 @@ function createTileElement(tile, index, source) {
     tileEl.addEventListener('dragleave', handleDragLeave);
     tileEl.addEventListener('drop', handleDrop);
     
-    // Click for color application
+    // Click for tile selection
     tileEl.addEventListener('click', handleTileClick);
-    
-    // Long press for definition (mouse)
-    tileEl.addEventListener('mousedown', handleTilePressStart);
-    tileEl.addEventListener('mouseup', handleTilePressEnd);
-    tileEl.addEventListener('mouseleave', handleTilePressCancel);
-    
-    // Long press for definition (touch)
-    tileEl.addEventListener('touchstart', handleTilePressStart, { passive: true });
-    tileEl.addEventListener('touchend', handleTilePressEnd);
-    tileEl.addEventListener('touchcancel', handleTilePressCancel);
     
     // Touch drag and drop (mobile)
     tileEl.addEventListener('touchstart', handleTouchDragStart, { passive: false });
@@ -706,13 +703,22 @@ function fitTileText(tile) {
 
 // ==================== Drag and Drop ====================
 
+let dragStyleTimeout = null;
+
 function handleDragStart(e) {
     // Cancel any pending long press
     handleTilePressCancel();
     
     state.draggedTile = e.target;
     state.draggedSource = e.target.dataset.source;
-    e.target.classList.add('dragging');
+    
+    // Delay adding dragging class to avoid flicker on click
+    dragStyleTimeout = setTimeout(() => {
+        if (state.draggedTile) {
+            state.draggedTile.classList.add('dragging');
+        }
+    }, 50);
+    
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('application/json', JSON.stringify({
         index: parseInt(e.target.dataset.index),
@@ -721,6 +727,11 @@ function handleDragStart(e) {
 }
 
 function handleDragEnd(e) {
+    // Clear the timeout if drag ends quickly
+    if (dragStyleTimeout) {
+        clearTimeout(dragStyleTimeout);
+        dragStyleTimeout = null;
+    }
     e.target.classList.remove('dragging');
     state.draggedTile = null;
     state.draggedSource = null;
@@ -776,6 +787,24 @@ function handleDrop(e) {
     // Get the tiles
     const fromTile = fromSource === 'grid' ? state.tiles[fromIndex] : state.scratchpad[fromIndex];
     const toTile = toSource === 'grid' ? state.tiles[toIndex] : state.scratchpad[toIndex];
+    
+    // Update selection to follow the tiles
+    const fromKey = `${fromSource}:${fromIndex}`;
+    const toKey = `${toSource}:${toIndex}`;
+    const fromWasSelected = state.selectedTiles.has(fromKey);
+    const toWasSelected = state.selectedTiles.has(toKey);
+    
+    // Remove old keys
+    state.selectedTiles.delete(fromKey);
+    state.selectedTiles.delete(toKey);
+    
+    // Add new keys based on where the tiles moved to
+    if (fromWasSelected) {
+        state.selectedTiles.add(toKey);
+    }
+    if (toWasSelected) {
+        state.selectedTiles.add(fromKey);
+    }
     
     // Swap or move
     if (fromSource === 'grid') {
@@ -964,6 +993,24 @@ function performSwap(fromSource, fromIndex, targetElement) {
     const fromTile = fromSource === 'grid' ? state.tiles[fromIndex] : state.scratchpad[fromIndex];
     const toTile = toSource === 'grid' ? state.tiles[toIndex] : state.scratchpad[toIndex];
     
+    // Update selection to follow the tiles
+    const fromKey = `${fromSource}:${fromIndex}`;
+    const toKey = `${toSource}:${toIndex}`;
+    const fromWasSelected = state.selectedTiles.has(fromKey);
+    const toWasSelected = state.selectedTiles.has(toKey);
+    
+    // Remove old keys
+    state.selectedTiles.delete(fromKey);
+    state.selectedTiles.delete(toKey);
+    
+    // Add new keys based on where the tiles moved to
+    if (fromWasSelected) {
+        state.selectedTiles.add(toKey);
+    }
+    if (toWasSelected) {
+        state.selectedTiles.add(fromKey);
+    }
+    
     // Swap or move
     if (fromSource === 'grid') {
         state.tiles[fromIndex] = toTile;
@@ -991,34 +1038,6 @@ function setupScratchpad() {
         slot.addEventListener('drop', handleDrop);
     });
     
-    // Scratchpad color buttons - color all tiles in scratchpad
-    const colorBtns = document.querySelectorAll('.scratchpad-color-btn');
-    colorBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const color = btn.dataset.color;
-            
-            if (color === 'none') {
-                // Clear button always clears
-                state.scratchpad.forEach(tile => {
-                    if (tile) tile.draftColor = null;
-                });
-            } else {
-                // Check if all tiles already have this color
-                const tilesInScratchpad = state.scratchpad.filter(t => t !== null);
-                const allSameColor = tilesInScratchpad.length > 0 && 
-                    tilesInScratchpad.every(t => t.draftColor === color);
-                
-                // Toggle: if all same color, clear; otherwise apply
-                state.scratchpad.forEach(tile => {
-                    if (tile) {
-                        tile.draftColor = allSameColor ? null : color;
-                    }
-                });
-            }
-            renderGrid();
-        });
-    });
-    
     // Send back button - return all scratchpad tiles to empty grid slots
     const sendBackBtn = document.getElementById('sendBackBtn');
     sendBackBtn.addEventListener('click', sendScratchpadBack);
@@ -1037,6 +1056,15 @@ function sendScratchpadBack() {
     let emptyIndex = 0;
     for (let i = 0; i < state.scratchpad.length; i++) {
         if (state.scratchpad[i] && emptyIndex < emptySlots.length) {
+            const fromKey = `scratchpad:${i}`;
+            const toKey = `grid:${emptySlots[emptyIndex]}`;
+            
+            // Update selection if this tile was selected
+            if (state.selectedTiles.has(fromKey)) {
+                state.selectedTiles.delete(fromKey);
+                state.selectedTiles.add(toKey);
+            }
+            
             state.tiles[emptySlots[emptyIndex]] = state.scratchpad[i];
             state.scratchpad[i] = null;
             emptyIndex++;
@@ -1053,37 +1081,55 @@ function setupColorPalette() {
         btn.addEventListener('click', () => {
             const color = btn.dataset.color;
             
-            // Toggle selection
-            if (state.selectedColor === color) {
-                state.selectedColor = null;
-                btn.classList.remove('active');
-            } else {
-                // Deselect all, select this one
-                elements.colorBtns.forEach(b => b.classList.remove('active'));
-                state.selectedColor = color;
-                btn.classList.add('active');
+            // Apply color to all selected tiles
+            if (state.selectedTiles.size === 0) return;
+            
+            // Check if all selected tiles already have this color (for toggle behavior)
+            let allSameColor = true;
+            for (const key of state.selectedTiles) {
+                const [source, index] = key.split(':');
+                const tile = source === 'grid' ? state.tiles[parseInt(index)] : state.scratchpad[parseInt(index)];
+                if (tile && tile.draftColor !== color) {
+                    allSameColor = false;
+                    break;
+                }
             }
+            
+            // Apply or clear the color
+            for (const key of state.selectedTiles) {
+                const [source, index] = key.split(':');
+                const tile = source === 'grid' ? state.tiles[parseInt(index)] : state.scratchpad[parseInt(index)];
+                if (tile) {
+                    if (color === 'none' || allSameColor) {
+                        tile.draftColor = null;
+                    } else {
+                        tile.draftColor = color;
+                    }
+                }
+            }
+            
+            // Keep selection after applying color
+            renderGrid();
         });
     });
 }
 
 function handleTileClick(e) {
-    // Only handle color application on click
-    if (state.selectedColor === null) return;
+    const tileEl = e.target.closest('.tile');
+    if (!tileEl || tileEl.classList.contains('tile-empty')) return;
     
-    const source = e.target.dataset.source;
-    const index = parseInt(e.target.dataset.index);
-    const tile = source === 'grid' ? state.tiles[index] : state.scratchpad[index];
+    const source = tileEl.dataset.source;
+    const index = parseInt(tileEl.dataset.index);
+    const key = `${source}:${index}`;
     
-    if (!tile) return;
-    
-    // Apply or clear color
-    if (state.selectedColor === 'none') {
-        tile.draftColor = null;
+    // Toggle selection
+    if (state.selectedTiles.has(key)) {
+        state.selectedTiles.delete(key);
+        tileEl.classList.remove('selected');
     } else {
-        tile.draftColor = state.selectedColor;
+        state.selectedTiles.add(key);
+        tileEl.classList.add('selected');
     }
-    renderGrid();
 }
 
 // Long press handling for definitions
@@ -1126,11 +1172,36 @@ function handleTilePressCancel(e) {
 
 function setupShuffleButton() {
     elements.shuffleBtn.addEventListener('click', () => {
+        // Track which tiles are selected before shuffle
+        const selectedTileObjects = new Set();
+        for (const key of state.selectedTiles) {
+            const [source, index] = key.split(':');
+            if (source === 'grid') {
+                const tile = state.tiles[parseInt(index)];
+                if (tile) selectedTileObjects.add(tile);
+            }
+        }
+        
+        // Remove grid selections (scratchpad stays the same)
+        for (const key of [...state.selectedTiles]) {
+            if (key.startsWith('grid:')) {
+                state.selectedTiles.delete(key);
+            }
+        }
+        
         // Fisher-Yates shuffle
         for (let i = state.tiles.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [state.tiles[i], state.tiles[j]] = [state.tiles[j], state.tiles[i]];
         }
+        
+        // Re-add selections at new positions
+        state.tiles.forEach((tile, index) => {
+            if (tile && selectedTileObjects.has(tile)) {
+                state.selectedTiles.add(`grid:${index}`);
+            }
+        });
+        
         renderGrid();
     });
 }
@@ -1148,14 +1219,33 @@ function setupModal() {
     
     // Close on Escape
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && !elements.modal.hidden) {
+        if (e.key === 'Escape') {
             closeModal();
+            closeHelpModal();
         }
     });
 }
 
 function closeModal() {
     elements.modal.hidden = true;
+}
+
+function setupHelpModal() {
+    elements.helpBtn.addEventListener('click', () => {
+        elements.helpModal.hidden = false;
+    });
+    
+    elements.helpModalClose.addEventListener('click', closeHelpModal);
+    
+    elements.helpModal.addEventListener('click', (e) => {
+        if (e.target === elements.helpModal) {
+            closeHelpModal();
+        }
+    });
+}
+
+function closeHelpModal() {
+    elements.helpModal.hidden = true;
 }
 
 async function showDefinition(word) {
