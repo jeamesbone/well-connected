@@ -266,8 +266,8 @@ async function processImage(file) {
             const cellX = col * cellWidth;
             const cellY = row * cellHeight;
             
-            // Shrink rectangle by 10px on all sides to remove borders
-            const borderPadding = 10;
+            // Shrink rectangle by 20px on all sides to remove borders
+            const borderPadding = 20;
             const rectX = cellX + borderPadding;
             const rectY = cellY + borderPadding;
             const rectWidth = cellWidth - (borderPadding * 2);
@@ -288,46 +288,37 @@ async function processImage(file) {
             // Extract all words from this cell and concatenate them
             let cellWords = [];
             
-            if (result.words && result.words.length > 0) {
-                console.log(`[Cell ${i + 1}/16] Found ${result.words.length} word(s):`, result.words.map(w => w.text));
-                // Collect all words from the cell
-                for (const word of result.words) {
-                    const cleaned = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
-                    if (cleaned.length >= 2) {
-                        cellWords.push(cleaned.toUpperCase());
-                    }
-                    // Store for debug overlay (adjust bbox to be relative to full cropped image)
-                    if (word.bbox) {
-                        state.detectedWords.push({
-                            text: cleaned.toUpperCase(),
-                            bbox: {
-                                x0: word.bbox.x0 + rectX,
-                                y0: word.bbox.y0 + rectY,
-                                x1: word.bbox.x1 + rectX,
-                                y1: word.bbox.y1 + rectY
-                            }
-                        });
-                    }
+            if (!result || !result.words || result.words.length === 0) {
+                console.log(`[Cell ${i + 1}/16] No OCR result`);
+                words.push(''); // Push empty string for this cell
+            } else {
+
+            console.log(`[Cell ${i + 1}/16] Found ${result.words.length} word(s):`, result.words.map(w => w.text));
+            // Collect all words from the cell
+            for (const word of result.words) {
+                const cleaned = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
+                if (cleaned.length >= 2) {
+                    cellWords.push(cleaned.toUpperCase());
                 }
-            }
-            
-            // Fallback: try lines if no words found
-            if (cellWords.length === 0 && result.lines && result.lines.length > 0) {
-                console.log(`[Cell ${i + 1}/16] No words found, trying lines:`, result.lines.map(l => l.text));
-                for (const line of result.lines) {
-                    if (line.text) {
-                        const cleaned = line.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
-                        if (cleaned.length >= 2) {
-                            cellWords.push(cleaned.toUpperCase());
+                // Store for debug overlay (adjust bbox to be relative to full cropped image)
+                if (word.bbox) {
+                    state.detectedWords.push({
+                        text: cleaned.toUpperCase(),
+                        bbox: {
+                            x0: word.bbox.x0 + rectX,
+                            y0: word.bbox.y0 + rectY,
+                            x1: word.bbox.x1 + rectX,
+                            y1: word.bbox.y1 + rectY
                         }
-                    }
+                    });
                 }
             }
             
-            // Concatenate all words with spaces
-            const cellWord = cellWords.join(' ');
-            console.log(`[Cell ${i + 1}/16] Final result: "${cellWord}"`);
-            words.push(cellWord);
+                // Concatenate all words with spaces
+                const cellWord = cellWords.join(' ');
+                console.log(`[Cell ${i + 1}/16] Final result: "${cellWord}"`);
+                words.push(cellWord);
+            }
         }
         
         // Terminate worker
