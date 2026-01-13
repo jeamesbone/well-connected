@@ -281,12 +281,19 @@ async function detectGridBounds(file) {
                 }
             }
             
-            // Find cells that contain NO background pixels (solid tile areas)
+            // Find cells that are mostly tile (not background)
+            // Use adaptive threshold based on background brightness
             const filledCells = [];
+            const pixelsPerCell = cellSize * cellSize;
+            // Light mode needs more lenient threshold due to anti-aliasing and subtle differences
+            const backgroundThresholdPercent = bgColor.brightness > 0.7 ? 0.15 : 0.05; // 15% for light, 5% for dark
+            const backgroundThreshold = pixelsPerCell * backgroundThresholdPercent;
             
             for (let cy = 0; cy < gridH; cy++) {
                 for (let cx = 0; cx < gridW; cx++) {
-                    if (bgCount[cy * gridW + cx] === 0) {
+                    const bgPixelCount = bgCount[cy * gridW + cx];
+                    // Cell is "filled" if it has few background pixels
+                    if (bgPixelCount < backgroundThreshold) {
                         filledCells.push({ x: cx, y: cy });
                     }
                 }
@@ -300,11 +307,23 @@ async function detectGridBounds(file) {
                 return;
             }
             
-            // Find bounding box of filled cells
+            // Filter out isolated cells (like PiP UI) that are far from the main cluster
+            const filteredCells = filterOutliers(filledCells);
+            console.log('Filtered cells (removed outliers):', filteredCells.length);
+            
+            if (filteredCells.length === 0) {
+                // If filtering removed everything, use original cells
+                console.warn('Filtering removed all cells, using original');
+                var cellsToUse = filledCells;
+            } else {
+                var cellsToUse = filteredCells;
+            }
+            
+            // Find bounding box of filtered filled cells
             let minX = Infinity, minY = Infinity;
             let maxX = -Infinity, maxY = -Infinity;
             
-            for (const cell of filledCells) {
+            for (const cell of cellsToUse) {
                 minX = Math.min(minX, cell.x);
                 minY = Math.min(minY, cell.y);
                 maxX = Math.max(maxX, cell.x);
@@ -325,7 +344,7 @@ async function detectGridBounds(file) {
                 imageWidth: width,
                 imageHeight: height,
                 // Debug info
-                filledCells: filledCells,
+                filledCells: cellsToUse,
                 cellSize: cellSize
             });
         };
@@ -340,76 +359,174 @@ async function detectGridBounds(file) {
 }
 
 /**
- * Sample the background color from edges of the image
- * This avoids UI elements that might be in corners
+ * Sample the background color using a histogram approach
+ * Samples from areas likely to be background (avoiding top UI area)
  */
 function sampleBackgroundColor(pixels, width, height) {
+    // Skip the top portion where UI elements are (status bar, nav bar, etc.)
+    const skipTop = Math.min(height * 0.12, 120); // Skip top 12% or 120px, whichever is smaller
+    
+    // Sample from a grid of points throughout the image (excluding top UI area)
+    const gridSize = 15; // Sample every 15 pixels for better coverage
     const samples = [];
-    const edgeWidth = 30; // Sample from edges, avoiding corners where UI might be
+    const colorMap = new Map(); // For histogram approach
     
-    // Sample from top edge (middle portion, avoiding corners)
-    for (let x = edgeWidth; x < width - edgeWidth; x++) {
-        for (let y = 0; y < edgeWidth; y++) {
-            const i = (y * width + x) * 4;
-            samples.push({
-                r: pixels[i],
-                g: pixels[i + 1],
-                b: pixels[i + 2]
-            });
+    // Sample from edges and corners, but also include some middle areas
+    for (let y = skipTop; y < height; y += gridSize) {
+        for (let x = 0; x < width; x += gridSize) {
+            const centerX = width / 2;
+            const centerY = height / 2;
+            const distFromCenter = Math.sqrt(
+                Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2)
+            );
+            const maxDist = Math.min(width, height) * 0.35;
+            
+            // Sample from edges, corners, and some peripheral areas
+            // But avoid the very center where the grid is
+            const isEdge = x < width * 0.15 || x > width * 0.85 || 
+                          y > height * 0.85 || 
+                          (y < skipTop + 50 && (x < width * 0.2 || x > width * 0.8));
+            
+            if (distFromCenter > maxDist || isEdge) {
+                const i = (y * width + x) * 4;
+                const r = pixels[i];
+                const g = pixels[i + 1];
+                const b = pixels[i + 2];
+                
+                // Quantize colors to reduce noise (round to nearest 8 for better grouping)
+                const qr = Math.round(r / 8) * 8;
+                const qg = Math.round(g / 8) * 8;
+                const qb = Math.round(b / 8) * 8;
+                const key = `${qr},${qg},${qb}`;
+                
+                colorMap.set(key, (colorMap.get(key) || 0) + 1);
+                samples.push({ r, g, b });
+            }
         }
     }
     
-    // Sample from bottom edge (middle portion)
-    for (let x = edgeWidth; x < width - edgeWidth; x++) {
-        for (let y = height - edgeWidth; y < height; y++) {
-            const i = (y * width + x) * 4;
-            samples.push({
-                r: pixels[i],
-                g: pixels[i + 1],
-                b: pixels[i + 2]
-            });
+    // Find the most common color (background should be most frequent)
+    let maxCount = 0;
+    let dominantColor = null;
+    for (const [key, count] of colorMap.entries()) {
+        if (count > maxCount) {
+            maxCount = count;
+            const [r, g, b] = key.split(',').map(Number);
+            dominantColor = { r, g, b };
         }
     }
     
-    // Sample from left edge (middle portion)
-    for (let x = 0; x < edgeWidth; x++) {
-        for (let y = edgeWidth; y < height - edgeWidth; y++) {
-            const i = (y * width + x) * 4;
-            samples.push({
-                r: pixels[i],
-                g: pixels[i + 1],
-                b: pixels[i + 2]
-            });
+    // Fallback to average if histogram didn't work
+    if (!dominantColor || samples.length === 0) {
+        const avg = { r: 0, g: 0, b: 0 };
+        for (const s of samples) {
+            avg.r += s.r;
+            avg.g += s.g;
+            avg.b += s.b;
         }
-    }
-    
-    // Sample from right edge (middle portion)
-    for (let x = width - edgeWidth; x < width; x++) {
-        for (let y = edgeWidth; y < height - edgeWidth; y++) {
-            const i = (y * width + x) * 4;
-            samples.push({
-                r: pixels[i],
-                g: pixels[i + 1],
-                b: pixels[i + 2]
-            });
+        if (samples.length > 0) {
+            avg.r = Math.round(avg.r / samples.length);
+            avg.g = Math.round(avg.g / samples.length);
+            avg.b = Math.round(avg.b / samples.length);
+        } else {
+            // Ultimate fallback: sample from actual corners
+            const cornerSamples = [];
+            const cornerSize = 30;
+            const corners = [
+                { x: 0, y: skipTop },
+                { x: width - cornerSize, y: skipTop },
+                { x: 0, y: height - cornerSize },
+                { x: width - cornerSize, y: height - cornerSize }
+            ];
+            for (const corner of corners) {
+                for (let dy = 0; dy < cornerSize; dy++) {
+                    for (let dx = 0; dx < cornerSize; dx++) {
+                        const x = corner.x + dx;
+                        const y = corner.y + dy;
+                        if (x >= 0 && x < width && y >= 0 && y < height) {
+                            const i = (y * width + x) * 4;
+                            cornerSamples.push({
+                                r: pixels[i],
+                                g: pixels[i + 1],
+                                b: pixels[i + 2]
+                            });
+                        }
+                    }
+                }
+            }
+            if (cornerSamples.length > 0) {
+                avg.r = Math.round(cornerSamples.reduce((sum, s) => sum + s.r, 0) / cornerSamples.length);
+                avg.g = Math.round(cornerSamples.reduce((sum, s) => sum + s.g, 0) / cornerSamples.length);
+                avg.b = Math.round(cornerSamples.reduce((sum, s) => sum + s.b, 0) / cornerSamples.length);
+            } else {
+                // Last resort: assume medium gray
+                avg.r = 128;
+                avg.g = 128;
+                avg.b = 128;
+            }
         }
+        dominantColor = avg;
     }
-    
-    // Return average color
-    const avg = { r: 0, g: 0, b: 0 };
-    for (const s of samples) {
-        avg.r += s.r;
-        avg.g += s.g;
-        avg.b += s.b;
-    }
-    avg.r = Math.round(avg.r / samples.length);
-    avg.g = Math.round(avg.g / samples.length);
-    avg.b = Math.round(avg.b / samples.length);
     
     // Calculate brightness for adaptive threshold
-    avg.brightness = (avg.r * 0.299 + avg.g * 0.587 + avg.b * 0.114) / 255;
+    dominantColor.brightness = (dominantColor.r * 0.299 + dominantColor.g * 0.587 + dominantColor.b * 0.114) / 255;
     
-    return avg;
+    return dominantColor;
+}
+
+/**
+ * Filter out isolated cells that are far from the main cluster
+ * This removes UI elements like PiP windows that are separate from the grid
+ */
+function filterOutliers(cells) {
+    if (cells.length === 0) return cells;
+    
+    // If we have very few cells, don't filter (might be a small grid or detection issue)
+    if (cells.length < 10) return cells;
+    
+    // Find the center of mass of all cells
+    let sumX = 0, sumY = 0;
+    for (const cell of cells) {
+        sumX += cell.x;
+        sumY += cell.y;
+    }
+    const centerX = sumX / cells.length;
+    const centerY = sumY / cells.length;
+    
+    // Calculate distances from center for each cell
+    const distances = cells.map(cell => {
+        const dx = cell.x - centerX;
+        const dy = cell.y - centerY;
+        return {
+            cell,
+            distance: Math.sqrt(dx * dx + dy * dy)
+        };
+    });
+    
+    // Sort by distance
+    distances.sort((a, b) => a.distance - b.distance);
+    
+    // Find the median distance (middle value)
+    const medianIndex = Math.floor(distances.length / 2);
+    const medianDistance = distances[medianIndex].distance;
+    
+    // Calculate a threshold: cells within 2.5x the median distance are considered part of the main cluster
+    // This should capture the grid while excluding isolated UI elements
+    const threshold = medianDistance * 2.5;
+    
+    // Filter to only include cells within the threshold
+    const filtered = distances
+        .filter(d => d.distance <= threshold)
+        .map(d => d.cell);
+    
+    // Safety check: if filtering removed more than 50% of cells, it's probably too aggressive
+    // Return original cells in that case
+    if (filtered.length < cells.length * 0.5) {
+        console.warn('Outlier filtering removed too many cells, using original');
+        return cells;
+    }
+    
+    return filtered;
 }
 
 /**
@@ -428,23 +545,35 @@ function isDifferentFromBackground(r, g, b, bgColor) {
     
     // Adaptive threshold based on background brightness
     // Dark backgrounds (dark mode) need lower threshold to detect lighter tiles
-    // Light backgrounds need higher threshold to avoid noise
+    // Light backgrounds need lower threshold too - tiles are often only slightly different
     let threshold;
     if (bgColor.brightness < 0.3) {
-        // Dark mode: use lower threshold (15-20)
-        threshold = 18;
+        // Dark mode: use much lower threshold to catch subtle differences
+        threshold = 12;
     } else if (bgColor.brightness < 0.7) {
         // Medium brightness: standard threshold
         threshold = 25;
     } else {
-        // Light mode: higher threshold to avoid false positives
-        threshold = 30;
+        // Light mode: use lower threshold - tiles are often only slightly darker than white background
+        threshold = 20;
     }
     
-    // Also check brightness difference for better dark mode detection
+    // Also check brightness difference for better detection
     const brightnessDiff = Math.abs(pixelBrightness - bgColor.brightness);
-    const minBrightnessDiff = bgColor.brightness < 0.3 ? 0.15 : 0.1; // Lower threshold for dark mode
+    // Adaptive brightness threshold
+    let minBrightnessDiff;
+    if (bgColor.brightness < 0.3) {
+        // Dark mode: tiles can be only slightly brighter
+        minBrightnessDiff = 0.08;
+    } else if (bgColor.brightness < 0.7) {
+        // Medium: standard threshold
+        minBrightnessDiff = 0.1;
+    } else {
+        // Light mode: tiles can be only slightly darker than white background
+        minBrightnessDiff = 0.05;
+    }
     
+    // Use OR logic for all modes - be more lenient to catch subtle differences
     return distance > threshold || brightnessDiff > minBrightnessDiff;
 }
 
