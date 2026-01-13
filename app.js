@@ -340,34 +340,58 @@ async function detectGridBounds(file) {
 }
 
 /**
- * Sample the background color from the corners of the image
+ * Sample the background color from edges of the image
+ * This avoids UI elements that might be in corners
  */
 function sampleBackgroundColor(pixels, width, height) {
     const samples = [];
-    const sampleSize = 20; // Sample 20x20 pixel areas from corners
+    const edgeWidth = 30; // Sample from edges, avoiding corners where UI might be
     
-    // Sample from each corner
-    const corners = [
-        { x: 0, y: 0 },
-        { x: width - sampleSize, y: 0 },
-        { x: 0, y: height - sampleSize },
-        { x: width - sampleSize, y: height - sampleSize }
-    ];
+    // Sample from top edge (middle portion, avoiding corners)
+    for (let x = edgeWidth; x < width - edgeWidth; x++) {
+        for (let y = 0; y < edgeWidth; y++) {
+            const i = (y * width + x) * 4;
+            samples.push({
+                r: pixels[i],
+                g: pixels[i + 1],
+                b: pixels[i + 2]
+            });
+        }
+    }
     
-    for (const corner of corners) {
-        for (let dy = 0; dy < sampleSize; dy++) {
-            for (let dx = 0; dx < sampleSize; dx++) {
-                const x = corner.x + dx;
-                const y = corner.y + dy;
-                if (x >= 0 && x < width && y >= 0 && y < height) {
-                    const i = (y * width + x) * 4;
-                    samples.push({
-                        r: pixels[i],
-                        g: pixels[i + 1],
-                        b: pixels[i + 2]
-                    });
-                }
-            }
+    // Sample from bottom edge (middle portion)
+    for (let x = edgeWidth; x < width - edgeWidth; x++) {
+        for (let y = height - edgeWidth; y < height; y++) {
+            const i = (y * width + x) * 4;
+            samples.push({
+                r: pixels[i],
+                g: pixels[i + 1],
+                b: pixels[i + 2]
+            });
+        }
+    }
+    
+    // Sample from left edge (middle portion)
+    for (let x = 0; x < edgeWidth; x++) {
+        for (let y = edgeWidth; y < height - edgeWidth; y++) {
+            const i = (y * width + x) * 4;
+            samples.push({
+                r: pixels[i],
+                g: pixels[i + 1],
+                b: pixels[i + 2]
+            });
+        }
+    }
+    
+    // Sample from right edge (middle portion)
+    for (let x = width - edgeWidth; x < width; x++) {
+        for (let y = edgeWidth; y < height - edgeWidth; y++) {
+            const i = (y * width + x) * 4;
+            samples.push({
+                r: pixels[i],
+                g: pixels[i + 1],
+                b: pixels[i + 2]
+            });
         }
     }
     
@@ -382,11 +406,15 @@ function sampleBackgroundColor(pixels, width, height) {
     avg.g = Math.round(avg.g / samples.length);
     avg.b = Math.round(avg.b / samples.length);
     
+    // Calculate brightness for adaptive threshold
+    avg.brightness = (avg.r * 0.299 + avg.g * 0.587 + avg.b * 0.114) / 255;
+    
     return avg;
 }
 
 /**
  * Check if a pixel color is significantly different from the background
+ * Uses adaptive threshold based on background brightness for better dark mode support
  */
 function isDifferentFromBackground(r, g, b, bgColor) {
     // Calculate color distance
@@ -395,8 +423,29 @@ function isDifferentFromBackground(r, g, b, bgColor) {
     const db = b - bgColor.b;
     const distance = Math.sqrt(dr * dr + dg * dg + db * db);
     
-    // Threshold for "different" - needs to be noticeably different
-    return distance > 25;
+    // Calculate brightness of this pixel
+    const pixelBrightness = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+    
+    // Adaptive threshold based on background brightness
+    // Dark backgrounds (dark mode) need lower threshold to detect lighter tiles
+    // Light backgrounds need higher threshold to avoid noise
+    let threshold;
+    if (bgColor.brightness < 0.3) {
+        // Dark mode: use lower threshold (15-20)
+        threshold = 18;
+    } else if (bgColor.brightness < 0.7) {
+        // Medium brightness: standard threshold
+        threshold = 25;
+    } else {
+        // Light mode: higher threshold to avoid false positives
+        threshold = 30;
+    }
+    
+    // Also check brightness difference for better dark mode detection
+    const brightnessDiff = Math.abs(pixelBrightness - bgColor.brightness);
+    const minBrightnessDiff = bgColor.brightness < 0.3 ? 0.15 : 0.1; // Lower threshold for dark mode
+    
+    return distance > threshold || brightnessDiff > minBrightnessDiff;
 }
 
 /**
