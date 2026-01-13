@@ -9,7 +9,9 @@ const state = {
     scratchpad: [null, null, null, null], // 4 scratchpad slots
     selectedTiles: new Set(), // Set of "source:index" strings for selected tiles
     draggedTile: null,
-    draggedSource: null // 'grid' or 'scratchpad'
+    draggedSource: null, // 'grid' or 'scratchpad'
+    debugVisible: false, // Debug overlay visibility
+    detectedWords: [] // All words detected by OCR for debug visualization
 };
 
 // DOM Elements
@@ -22,6 +24,7 @@ const elements = {
     previewWrapper: document.getElementById('previewWrapper'),
     previewImage: document.getElementById('previewImage'),
     debugCanvas: document.getElementById('debugCanvas'),
+    debugToggle: document.getElementById('debugToggle'),
     clearBtn: document.getElementById('clearBtn'),
     uploadSection: document.getElementById('uploadSection'),
     statusSection: document.getElementById('statusSection'),
@@ -51,6 +54,7 @@ function init() {
     setupModal();
     setupHelpModal();
     setupScratchpad();
+    setupDebugToggle();
     loadSavedState();
 }
 
@@ -145,7 +149,11 @@ function handleFile(file) {
     reader.onload = (e) => {
         elements.previewImage.src = e.target.result;
         elements.uploadArea.hidden = true;
-        elements.previewContainer.hidden = false;
+        
+        // Set visibility based on debug state (show container when debug is on)
+        elements.previewContainer.hidden = !state.debugVisible;
+        elements.previewImage.hidden = !state.debugVisible;
+        elements.debugCanvas.hidden = !state.debugVisible;
         
         // Process image
         processImage(file);
@@ -164,6 +172,7 @@ function resetUpload() {
     state.tiles = [];
     state.scratchpad = [null, null, null, null];
     state.selectedTiles.clear();
+    state.detectedWords = [];
     
     // Clear saved state
     clearSavedState();
@@ -185,35 +194,116 @@ async function processImage(file) {
             throw new Error('OCR library not loaded. Please check your internet connection.');
         }
 
-        // First, detect the grid region visually
-        const gridBounds = await detectGridBounds(file);
+        elements.statusText.textContent = 'Preprocessing image...';
+        
+        // Preprocess image: convert dark mode to light mode for better OCR
+        const { blob, dataUrl } = await preprocessImageForOCR(file);
+
+        elements.statusText.textContent = 'Detecting grid...';
+        
+        // Detect the grid region on the preprocessed image
+        const gridBounds = await detectGridBounds(blob);
         console.log('Detected grid bounds:', gridBounds);
+        
+        // Store grid bounds for debug toggle
+        state.lastGridBounds = gridBounds;
         
         // Draw debug overlay showing detected bounds
         drawDebugOverlay(gridBounds);
 
+        elements.statusText.textContent = 'Cropping image...';
+        
+        // Crop the image to the grid bounds
+        const croppedBlob = await cropImage(blob, gridBounds);
+
         elements.statusText.textContent = 'Reading text...';
 
-        const result = await Tesseract.recognize(file, 'eng', {
-            logger: (m) => {
-                if (m.status === 'recognizing text') {
-                    const progress = Math.round(m.progress * 100);
-                    elements.statusText.textContent = `Reading text... ${progress}%`;
+        // OCR each cell individually (4x4 grid = 16 cells)
+        const words = [];
+        const totalCells = 16;
+        
+        for (let i = 0; i < totalCells; i++) {
+            const progress = Math.round((i / totalCells) * 100);
+            elements.statusText.textContent = `Reading text... ${progress}%`;
+            
+            // Extract individual cell
+            const cellBlob = await extractCell(croppedBlob, i, gridBounds.width, gridBounds.height);
+            
+            // Run OCR on the cell
+            const result = await Tesseract.recognize(cellBlob, 'eng', {
+                logger: (m) => {
+                    // Silent - we show progress at cell level
+                }
+            });
+            
+            // Extract all words from this cell and concatenate them
+            let cellWords = [];
+            
+            if (result.data.words && result.data.words.length > 0) {
+                // Collect all words from the cell
+                for (const word of result.data.words) {
+                    const cleaned = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
+                    if (cleaned.length >= 2) {
+                        cellWords.push(cleaned.toUpperCase());
+                    }
                 }
             }
-        });
-
+            
+            // Fallback: try lines if no words found
+            if (cellWords.length === 0 && result.data.lines && result.data.lines.length > 0) {
+                for (const line of result.data.lines) {
+                    if (line.text) {
+                        const cleaned = line.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
+                        if (cleaned.length >= 2) {
+                            cellWords.push(cleaned.toUpperCase());
+                        }
+                    }
+                }
+            }
+            
+            // Concatenate all words with spaces
+            const cellWord = cellWords.join(' ');
+            words.push(cellWord);
+        }
+        
         elements.statusText.textContent = 'Extracting tiles...';
         
-        // Extract words only from within the grid bounds
-        const words = extractGridWords(result.data, gridBounds);
+        // Filter out empty words and store detected words for debug
+        const detectedWords = [];
+        const validWords = words.filter((word, index) => {
+            if (word && word.length >= 2) {
+                detectedWords.push({
+                    text: word,
+                    centerX: (index % 4) * (gridBounds.width / 4) + (gridBounds.width / 8),
+                    centerY: Math.floor(index / 4) * (gridBounds.height / 4) + (gridBounds.height / 8),
+                    bbox: {
+                        x0: (index % 4) * (gridBounds.width / 4),
+                        y0: Math.floor(index / 4) * (gridBounds.height / 4),
+                        x1: ((index % 4) + 1) * (gridBounds.width / 4),
+                        y1: (Math.floor(index / 4) + 1) * (gridBounds.height / 4)
+                    }
+                });
+                return true;
+            }
+            return false;
+        });
         
-        if (words.length === 0) {
+        state.detectedWords = detectedWords;
+        
+        // Update preview to show processed image
+        elements.previewImage.src = URL.createObjectURL(croppedBlob);
+
+        // Redraw debug overlay with word boxes
+        if (state.debugVisible && state.lastGridBounds) {
+            drawDebugOverlay(state.lastGridBounds);
+        }
+        
+        if (validWords.length === 0) {
             throw new Error('No words found. Please ensure the image shows a Connections puzzle grid.');
         }
 
-        // Pad or trim to 16 tiles
-        state.tiles = normalizeToGrid(words);
+        // Pad or trim to 16 tiles (words are already in grid order)
+        state.tiles = normalizeToGrid(validWords);
         
         elements.statusSection.hidden = true;
         elements.gridSection.hidden = false;
@@ -233,349 +323,6 @@ async function processImage(file) {
     }
 }
 
-/**
- * Detect the grid region by analyzing tile background colors.
- * Works by finding areas that differ from the page background.
- * Returns bounding box { x, y, width, height } of the grid area.
- */
-async function detectGridBounds(file) {
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-            
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const pixels = imageData.data;
-            const width = canvas.width;
-            const height = canvas.height;
-            
-            // Sample background color from corners
-            const bgColor = sampleBackgroundColor(pixels, width, height);
-            console.log('Detected background color:', bgColor);
-            
-            // Create a grid to track which areas have background color
-            // Use larger cells to filter out small elements like circles/dots
-            const cellSize = 40; // 20x20 pixel cells - larger than UI dots but smaller than tiles
-            const gridW = Math.ceil(width / cellSize);
-            const gridH = Math.ceil(height / cellSize);
-            const bgCount = new Array(gridW * gridH).fill(0); // Count of background pixels per cell
-            
-            // Count BACKGROUND pixels in each cell
-            for (let y = 0; y < height; y++) {
-                for (let x = 0; x < width; x++) {
-                    const i = (y * width + x) * 4;
-                    const r = pixels[i];
-                    const g = pixels[i + 1];
-                    const b = pixels[i + 2];
-                    
-                    // Count pixels that ARE the background color
-                    if (!isDifferentFromBackground(r, g, b, bgColor)) {
-                        const cellX = Math.floor(x / cellSize);
-                        const cellY = Math.floor(y / cellSize);
-                        bgCount[cellY * gridW + cellX]++;
-                    }
-                }
-            }
-            
-            // Find cells that are mostly tile (not background)
-            // Use adaptive threshold based on background brightness
-            const filledCells = [];
-            const pixelsPerCell = cellSize * cellSize;
-            // Light mode needs more lenient threshold due to anti-aliasing and subtle differences
-            const backgroundThresholdPercent = bgColor.brightness > 0.7 ? 0.15 : 0.05; // 15% for light, 5% for dark
-            const backgroundThreshold = pixelsPerCell * backgroundThresholdPercent;
-            
-            for (let cy = 0; cy < gridH; cy++) {
-                for (let cx = 0; cx < gridW; cx++) {
-                    const bgPixelCount = bgCount[cy * gridW + cx];
-                    // Cell is "filled" if it has few background pixels
-                    if (bgPixelCount < backgroundThreshold) {
-                        filledCells.push({ x: cx, y: cy });
-                    }
-                }
-            }
-            
-            console.log('Found filled cells:', filledCells.length);
-            
-            if (filledCells.length === 0) {
-                // Fallback: return full image bounds
-                resolve({ x: 0, y: 0, width, height, imageWidth: width, imageHeight: height });
-                return;
-            }
-            
-            // Filter out isolated cells (like PiP UI) that are far from the main cluster
-            const filteredCells = filterOutliers(filledCells);
-            console.log('Filtered cells (removed outliers):', filteredCells.length);
-            
-            if (filteredCells.length === 0) {
-                // If filtering removed everything, use original cells
-                console.warn('Filtering removed all cells, using original');
-                var cellsToUse = filledCells;
-            } else {
-                var cellsToUse = filteredCells;
-            }
-            
-            // Find bounding box of filtered filled cells
-            let minX = Infinity, minY = Infinity;
-            let maxX = -Infinity, maxY = -Infinity;
-            
-            for (const cell of cellsToUse) {
-                minX = Math.min(minX, cell.x);
-                minY = Math.min(minY, cell.y);
-                maxX = Math.max(maxX, cell.x);
-                maxY = Math.max(maxY, cell.y);
-            }
-            
-            // Convert back to pixel coordinates
-            const pixelMinX = minX * cellSize;
-            const pixelMinY = minY * cellSize;
-            const pixelMaxX = (maxX + 1) * cellSize;
-            const pixelMaxY = (maxY + 1) * cellSize;
-            
-            resolve({
-                x: pixelMinX,
-                y: pixelMinY,
-                width: pixelMaxX - pixelMinX,
-                height: pixelMaxY - pixelMinY,
-                imageWidth: width,
-                imageHeight: height,
-                // Debug info
-                filledCells: cellsToUse,
-                cellSize: cellSize
-            });
-        };
-        
-        // Load image from file
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            img.src = e.target.result;
-        };
-        reader.readAsDataURL(file);
-    });
-}
-
-/**
- * Sample the background color using a histogram approach
- * Samples from areas likely to be background (avoiding top UI area)
- */
-function sampleBackgroundColor(pixels, width, height) {
-    // Skip the top portion where UI elements are (status bar, nav bar, etc.)
-    const skipTop = Math.min(height * 0.12, 120); // Skip top 12% or 120px, whichever is smaller
-    
-    // Sample from a grid of points throughout the image (excluding top UI area)
-    const gridSize = 15; // Sample every 15 pixels for better coverage
-    const samples = [];
-    const colorMap = new Map(); // For histogram approach
-    
-    // Sample from edges and corners, but also include some middle areas
-    for (let y = skipTop; y < height; y += gridSize) {
-        for (let x = 0; x < width; x += gridSize) {
-            const centerX = width / 2;
-            const centerY = height / 2;
-            const distFromCenter = Math.sqrt(
-                Math.pow(x - centerX, 2) + Math.pow(y - centerY, 2)
-            );
-            const maxDist = Math.min(width, height) * 0.35;
-            
-            // Sample from edges, corners, and some peripheral areas
-            // But avoid the very center where the grid is
-            const isEdge = x < width * 0.15 || x > width * 0.85 || 
-                          y > height * 0.85 || 
-                          (y < skipTop + 50 && (x < width * 0.2 || x > width * 0.8));
-            
-            if (distFromCenter > maxDist || isEdge) {
-                const i = (y * width + x) * 4;
-                const r = pixels[i];
-                const g = pixels[i + 1];
-                const b = pixels[i + 2];
-                
-                // Quantize colors to reduce noise (round to nearest 8 for better grouping)
-                const qr = Math.round(r / 8) * 8;
-                const qg = Math.round(g / 8) * 8;
-                const qb = Math.round(b / 8) * 8;
-                const key = `${qr},${qg},${qb}`;
-                
-                colorMap.set(key, (colorMap.get(key) || 0) + 1);
-                samples.push({ r, g, b });
-            }
-        }
-    }
-    
-    // Find the most common color (background should be most frequent)
-    let maxCount = 0;
-    let dominantColor = null;
-    for (const [key, count] of colorMap.entries()) {
-        if (count > maxCount) {
-            maxCount = count;
-            const [r, g, b] = key.split(',').map(Number);
-            dominantColor = { r, g, b };
-        }
-    }
-    
-    // Fallback to average if histogram didn't work
-    if (!dominantColor || samples.length === 0) {
-        const avg = { r: 0, g: 0, b: 0 };
-        for (const s of samples) {
-            avg.r += s.r;
-            avg.g += s.g;
-            avg.b += s.b;
-        }
-        if (samples.length > 0) {
-            avg.r = Math.round(avg.r / samples.length);
-            avg.g = Math.round(avg.g / samples.length);
-            avg.b = Math.round(avg.b / samples.length);
-        } else {
-            // Ultimate fallback: sample from actual corners
-            const cornerSamples = [];
-            const cornerSize = 30;
-            const corners = [
-                { x: 0, y: skipTop },
-                { x: width - cornerSize, y: skipTop },
-                { x: 0, y: height - cornerSize },
-                { x: width - cornerSize, y: height - cornerSize }
-            ];
-            for (const corner of corners) {
-                for (let dy = 0; dy < cornerSize; dy++) {
-                    for (let dx = 0; dx < cornerSize; dx++) {
-                        const x = corner.x + dx;
-                        const y = corner.y + dy;
-                        if (x >= 0 && x < width && y >= 0 && y < height) {
-                            const i = (y * width + x) * 4;
-                            cornerSamples.push({
-                                r: pixels[i],
-                                g: pixels[i + 1],
-                                b: pixels[i + 2]
-                            });
-                        }
-                    }
-                }
-            }
-            if (cornerSamples.length > 0) {
-                avg.r = Math.round(cornerSamples.reduce((sum, s) => sum + s.r, 0) / cornerSamples.length);
-                avg.g = Math.round(cornerSamples.reduce((sum, s) => sum + s.g, 0) / cornerSamples.length);
-                avg.b = Math.round(cornerSamples.reduce((sum, s) => sum + s.b, 0) / cornerSamples.length);
-            } else {
-                // Last resort: assume medium gray
-                avg.r = 128;
-                avg.g = 128;
-                avg.b = 128;
-            }
-        }
-        dominantColor = avg;
-    }
-    
-    // Calculate brightness for adaptive threshold
-    dominantColor.brightness = (dominantColor.r * 0.299 + dominantColor.g * 0.587 + dominantColor.b * 0.114) / 255;
-    
-    return dominantColor;
-}
-
-/**
- * Filter out isolated cells that are far from the main cluster
- * This removes UI elements like PiP windows that are separate from the grid
- */
-function filterOutliers(cells) {
-    if (cells.length === 0) return cells;
-    
-    // If we have very few cells, don't filter (might be a small grid or detection issue)
-    if (cells.length < 10) return cells;
-    
-    // Find the center of mass of all cells
-    let sumX = 0, sumY = 0;
-    for (const cell of cells) {
-        sumX += cell.x;
-        sumY += cell.y;
-    }
-    const centerX = sumX / cells.length;
-    const centerY = sumY / cells.length;
-    
-    // Calculate distances from center for each cell
-    const distances = cells.map(cell => {
-        const dx = cell.x - centerX;
-        const dy = cell.y - centerY;
-        return {
-            cell,
-            distance: Math.sqrt(dx * dx + dy * dy)
-        };
-    });
-    
-    // Sort by distance
-    distances.sort((a, b) => a.distance - b.distance);
-    
-    // Find the median distance (middle value)
-    const medianIndex = Math.floor(distances.length / 2);
-    const medianDistance = distances[medianIndex].distance;
-    
-    // Calculate a threshold: cells within 2.5x the median distance are considered part of the main cluster
-    // This should capture the grid while excluding isolated UI elements
-    const threshold = medianDistance * 2.5;
-    
-    // Filter to only include cells within the threshold
-    const filtered = distances
-        .filter(d => d.distance <= threshold)
-        .map(d => d.cell);
-    
-    // Safety check: if filtering removed more than 50% of cells, it's probably too aggressive
-    // Return original cells in that case
-    if (filtered.length < cells.length * 0.5) {
-        console.warn('Outlier filtering removed too many cells, using original');
-        return cells;
-    }
-    
-    return filtered;
-}
-
-/**
- * Check if a pixel color is significantly different from the background
- * Uses adaptive threshold based on background brightness for better dark mode support
- */
-function isDifferentFromBackground(r, g, b, bgColor) {
-    // Calculate color distance
-    const dr = r - bgColor.r;
-    const dg = g - bgColor.g;
-    const db = b - bgColor.b;
-    const distance = Math.sqrt(dr * dr + dg * dg + db * db);
-    
-    // Calculate brightness of this pixel
-    const pixelBrightness = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
-    
-    // Adaptive threshold based on background brightness
-    // Dark backgrounds (dark mode) need lower threshold to detect lighter tiles
-    // Light backgrounds need lower threshold too - tiles are often only slightly different
-    let threshold;
-    if (bgColor.brightness < 0.3) {
-        // Dark mode: use much lower threshold to catch subtle differences
-        threshold = 12;
-    } else if (bgColor.brightness < 0.7) {
-        // Medium brightness: standard threshold
-        threshold = 25;
-    } else {
-        // Light mode: use lower threshold - tiles are often only slightly darker than white background
-        threshold = 20;
-    }
-    
-    // Also check brightness difference for better detection
-    const brightnessDiff = Math.abs(pixelBrightness - bgColor.brightness);
-    // Adaptive brightness threshold
-    let minBrightnessDiff;
-    if (bgColor.brightness < 0.3) {
-        // Dark mode: tiles can be only slightly brighter
-        minBrightnessDiff = 0.08;
-    } else if (bgColor.brightness < 0.7) {
-        // Medium: standard threshold
-        minBrightnessDiff = 0.1;
-    } else {
-        // Light mode: tiles can be only slightly darker than white background
-        minBrightnessDiff = 0.05;
-    }
-    
-    // Use OR logic for all modes - be more lenient to catch subtle differences
-    return distance > threshold || brightnessDiff > minBrightnessDiff;
-}
 
 /**
  * Draw a debug overlay showing the detected grid bounds
@@ -603,35 +350,29 @@ function drawDebugOverlay(gridBounds) {
     const scaleX = displayWidth / gridBounds.imageWidth;
     const scaleY = displayHeight / gridBounds.imageHeight;
     
-    // Draw filled cells in green
-    if (gridBounds.filledCells && gridBounds.cellSize) {
-        ctx.fillStyle = 'rgba(0, 200, 100, 0.5)';
-        const cellDisplayW = gridBounds.cellSize * scaleX;
-        const cellDisplayH = gridBounds.cellSize * scaleY;
+    // Draw detected word boxes in purple
+    if (state.detectedWords && state.detectedWords.length > 0) {
+        ctx.strokeStyle = '#9b59b6'; // Purple
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]); // Solid lines
         
-        for (const cell of gridBounds.filledCells) {
-            const cellX = cell.x * gridBounds.cellSize * scaleX;
-            const cellY = cell.y * gridBounds.cellSize * scaleY;
-            ctx.fillRect(cellX, cellY, cellDisplayW, cellDisplayH);
+        for (const word of state.detectedWords) {
+            if (word.bbox) {
+                const wordX = word.bbox.x0 * scaleX;
+                const wordY = word.bbox.y0 * scaleY;
+                const wordW = (word.bbox.x1 - word.bbox.x0) * scaleX;
+                const wordH = (word.bbox.y1 - word.bbox.y0) * scaleY;
+                
+                // Draw word bounding box
+                ctx.strokeRect(wordX, wordY, wordW, wordH);
+                
+                // Optionally draw word text (small, at top of box)
+                ctx.fillStyle = '#9b59b6';
+                ctx.font = '10px system-ui, sans-serif';
+                ctx.fillText(word.text, wordX + 2, wordY - 2);
+            }
         }
     }
-    
-    // Draw the bounding box
-    const x = gridBounds.x * scaleX;
-    const y = gridBounds.y * scaleY;
-    const width = gridBounds.width * scaleX;
-    const height = gridBounds.height * scaleY;
-    
-    // Draw bounding box outline
-    ctx.strokeStyle = '#c45c3a';
-    ctx.lineWidth = 3;
-    ctx.setLineDash([8, 4]);
-    ctx.strokeRect(x, y, width, height);
-    
-    // Label
-    ctx.fillStyle = '#c45c3a';
-    ctx.font = 'bold 14px system-ui, sans-serif';
-    ctx.fillText('Detected Grid Area', x + 8, y + 20);
 }
 
 /**
@@ -640,12 +381,32 @@ function drawDebugOverlay(gridBounds) {
 function extractGridWords(ocrData, gridBounds) {
     const allWords = [];
     
+    // Tesseract.js returns coordinates in the original image coordinate system
+    // We should NOT scale - the bbox coordinates are already in image pixel coordinates
+    // Use scale of 1.0 (no scaling)
+    const finalScaleX = 1.0;
+    const finalScaleY = 1.0;
+    
+    console.log('Image dimensions:', gridBounds.imageWidth, 'x', gridBounds.imageHeight);
+    console.log('Grid bounds:', gridBounds.x, gridBounds.y, gridBounds.width, gridBounds.height);
+    
+    // Collect all words with their positions for debugging
+    const allDetectedWords = [];
+    
     for (const line of ocrData.lines || []) {
         for (const word of line.words || []) {
             const text = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
-            if (text.length >= 2) {
-                const wordCenterX = (word.bbox.x0 + word.bbox.x1) / 2;
-                const wordCenterY = (word.bbox.y0 + word.bbox.y1) / 2;
+            if (text.length >= 2 && word.bbox) {
+                // Scale OCR coordinates to original image coordinates
+                const wordCenterX = ((word.bbox.x0 + word.bbox.x1) / 2) * finalScaleX;
+                const wordCenterY = ((word.bbox.y0 + word.bbox.y1) / 2) * finalScaleY;
+                
+                allDetectedWords.push({
+                    text: text.toUpperCase(),
+                    centerX: wordCenterX,
+                    centerY: wordCenterY,
+                    bbox: word.bbox
+                });
                 
                 // Check if word center falls within grid bounds
                 const inGrid = (
@@ -662,12 +423,22 @@ function extractGridWords(ocrData, gridBounds) {
                         confidence: word.confidence,
                         centerY: wordCenterY,
                         centerX: wordCenterX,
-                        height: word.bbox.y1 - word.bbox.y0
+                        height: (word.bbox.y1 - word.bbox.y0) * finalScaleY
                     });
                 }
             }
         }
     }
+    
+    console.log('Total words detected:', allDetectedWords.length);
+    console.log('Words in grid:', allWords.length);
+    if (allDetectedWords.length > 0 && allWords.length === 0) {
+        console.warn('No words found in grid bounds! Sample word positions:', 
+            allDetectedWords.slice(0, 5).map(w => `${w.text} at (${w.centerX.toFixed(0)}, ${w.centerY.toFixed(0)})`));
+    }
+    
+    // Store detected words for debug visualization
+    state.detectedWords = allDetectedWords;
     
     if (allWords.length === 0) return [];
     
@@ -1420,6 +1191,28 @@ function setupHelpModal() {
             closeHelpModal();
         }
     });
+}
+
+function setupDebugToggle() {
+    if (!elements.debugToggle) return;
+    
+    elements.debugToggle.addEventListener('click', () => {
+        state.debugVisible = !state.debugVisible;
+        
+        // Show/hide preview container and both image/canvas together
+        // When debug is ON: show all, when OFF: hide all
+        elements.previewContainer.hidden = !state.debugVisible;
+        elements.previewImage.hidden = !state.debugVisible;
+        elements.debugCanvas.hidden = !state.debugVisible;
+        
+        // Redraw debug overlay if we have grid bounds stored and debug is visible
+        if (state.debugVisible && state.lastGridBounds) {
+            drawDebugOverlay(state.lastGridBounds);
+        }
+    });
+    
+    // Initialize canvas as hidden (preview image will be shown when file is loaded)
+    elements.debugCanvas.hidden = true;
 }
 
 function closeHelpModal() {
