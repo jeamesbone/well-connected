@@ -57,10 +57,11 @@
                     <!-- Tiles will be inserted here -->
                 </div>
 
-                <div class="scratchpad-section">
+                <div class="scratchpad-section" id="scratchpadSection" hidden>
                     <div class="scratchpad-header">
-                        <span class="scratchpad-label">Scratchpad</span>
-                        <button class="btn btn-small" id="sendBackBtn" title="Send all back to grid">↩ Send Back</button>
+                        <button class="btn btn-secondary btn-shuffle" id="sendBackBtn" title="Send all back to grid">
+                            ↑ <span class="shuffle-text">Send Back</span>
+                        </button>
                     </div>
                     <div class="scratchpad" id="scratchpad">
                         <div class="scratchpad-slot" data-slot="0"></div>
@@ -95,10 +96,6 @@
                 </div>
             </div>
         </main>
-
-        <footer class="footer">
-            <p>Built for Connections enthusiasts</p>
-        </footer>
     </div>
 
     <script src="app.js"></script>

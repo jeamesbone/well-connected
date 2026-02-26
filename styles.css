@@ -394,6 +394,10 @@ body {
 
 /* Grid Section */
 .grid-section {
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+    width: 100%;
     animation: fadeIn var(--transition-slow) ease-out;
 }
 
@@ -580,16 +584,19 @@ body {
 
 .scratchpad-header {
     display: flex;
-    justify-content: space-between;
+    justify-content: center;
     align-items: center;
     margin-bottom: var(--space-sm);
 }
 
+.scratchpad-header-side {
+    flex: 1;
+}
+
 .scratchpad-label {
-    font-size: 0.8rem;
+    font-size: 1.0rem;
+    padding-left: var(--space-sm);
     color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
 }
 
 .scratchpad-controls {
@@ -655,7 +662,7 @@ body {
 }
 
 .scratchpad-slot {
-    aspect-ratio: 1.6;
+    aspect-ratio: 1;
     background: var(--bg-primary);
     border-radius: 8px;
     border: 2px dashed var(--border-color);
@@ -819,7 +826,7 @@ body {
 /* Footer */
 .footer {
     text-align: center;
-    padding: var(--space-xl) 0 var(--space-md);
+    padding: var(--space-lg) 0 var(--space-sm);
     margin-top: auto;
 }
 
@@ -855,7 +862,13 @@ body {
     }
     
     .btn-shuffle {
-        padding: var(--space-sm);
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
     }
 }
 
