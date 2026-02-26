@@ -40,7 +40,9 @@ const elements = {
     modalClose: document.getElementById('modalClose'),
     helpBtn: document.getElementById('helpBtn'),
     helpModal: document.getElementById('helpModal'),
-    helpModalClose: document.getElementById('helpModalClose')
+    helpModalClose: document.getElementById('helpModalClose'),
+    todaySection: document.getElementById('todaySection'),
+    todayBtn: document.getElementById('todayBtn')
 };
 
 // Storage key
@@ -56,6 +58,7 @@ function init() {
     setupScratchpad();
     setupDebugToggle();
     loadSavedState();
+    checkTodayWords();
 }
 
 // ==================== Local Storage ====================
@@ -93,6 +96,33 @@ function loadSavedState() {
 
 function clearSavedState() {
     localStorage.removeItem(STORAGE_KEY);
+}
+
+// ==================== Today's Words ====================
+
+async function checkTodayWords() {
+    try {
+        const res = await fetch('today.json', { cache: 'no-cache' });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+
+        if (data.date === today && Array.isArray(data.words) && data.words.length === 16) {
+            elements.todaySection.hidden = false;
+            elements.todayBtn.addEventListener('click', () => loadTodayWords(data.words));
+        }
+    } catch {
+        // today.json not available — silently ignore
+    }
+}
+
+function loadTodayWords(words) {
+    state.tiles = normalizeToGrid(words);
+    elements.uploadArea.hidden = true;
+    elements.uploadMinimized.hidden = false;
+    elements.gridSection.hidden = false;
+    renderGrid();
 }
 
 // ==================== Upload Handling ====================
@@ -237,6 +267,9 @@ async function processImage(file) {
         
         // Crop the image to the grid bounds (with padding)
         const croppedBlob = await cropImage(file, gridBounds);
+        
+        // Update preview to show cropped image
+        elements.previewImage.src = URL.createObjectURL(croppedBlob);
 
         elements.statusText.textContent = 'Initializing OCR...';
 
@@ -395,46 +428,41 @@ function drawDebugOverlay(gridBounds) {
         return;
     }
     
-    // Set canvas size to match displayed image
+    // Get the actual displayed dimensions of the image
     const displayWidth = img.clientWidth;
     const displayHeight = img.clientHeight;
-    canvas.width = displayWidth;
-    canvas.height = displayHeight;
+    
+    // Get the natural (actual) dimensions of the image
+    // Since preview now shows cropped image, use cropped dimensions (gridBounds.width/height)
+    const naturalWidth = gridBounds.width || img.naturalWidth || img.width;
+    const naturalHeight = gridBounds.height || img.naturalHeight || img.height;
+    
+    // Set canvas size to match displayed image (use device pixel ratio for crisp rendering)
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = displayWidth * dpr;
+    canvas.height = displayHeight * dpr;
+    canvas.style.width = displayWidth + 'px';
+    canvas.style.height = displayHeight + 'px';
     
     const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, displayWidth, displayHeight);
     
-    // Scale factor from original image to displayed size
-    const scaleX = displayWidth / gridBounds.imageWidth;
-    const scaleY = displayHeight / gridBounds.imageHeight;
+    // Scale factor from original image natural size to displayed size
+    const scaleX = displayWidth / naturalWidth;
+    const scaleY = displayHeight / naturalHeight;
     
-    // Draw detected word boxes in purple
-    if (state.detectedWords && state.detectedWords.length > 0) {
-        ctx.strokeStyle = '#9b59b6'; // Purple
-        ctx.lineWidth = 2;
-        ctx.setLineDash([]); // Solid lines
-        
-        for (const word of state.detectedWords) {
-            if (word.bbox) {
-                const wordX = word.bbox.x0 * scaleX;
-                const wordY = word.bbox.y0 * scaleY;
-                const wordW = (word.bbox.x1 - word.bbox.x0) * scaleX;
-                const wordH = (word.bbox.y1 - word.bbox.y0) * scaleY;
-                
-                // Draw word bounding box
-                ctx.strokeRect(wordX, wordY, wordW, wordH);
-                
-                // Optionally draw word text (small, at top of box)
-                ctx.fillStyle = '#9b59b6';
-                ctx.font = '10px system-ui, sans-serif';
-                ctx.fillText(word.text, wordX + 2, wordY - 2);
-            }
-        }
-    }
+    console.log('[Debug Overlay] Image dimensions:', {
+        natural: { width: naturalWidth, height: naturalHeight },
+        displayed: { width: displayWidth, height: displayHeight },
+        scale: { x: scaleX, y: scaleY },
+        gridBounds: gridBounds
+    });
     
     // Draw cell boundaries (4x4 grid = 16 cells)
-    const gridX = gridBounds.x * scaleX;
-    const gridY = gridBounds.y * scaleY;
+    // Grid is in cropped image coordinates, starting at 0,0
+    const gridX = 0;
+    const gridY = 0;
     const gridW = gridBounds.width * scaleX;
     const gridH = gridBounds.height * scaleY;
     const cellW = gridW / 4;
@@ -462,9 +490,28 @@ function drawDebugOverlay(gridBounds) {
         ctx.stroke();
     }
     
-    // Draw cell numbers (optional, for easier identification)
-    ctx.fillStyle = '#3498db';
-    ctx.font = 'bold 12px system-ui, sans-serif';
+    // Group words by cell for display
+    const wordsByCell = Array(16).fill(null).map(() => []);
+    if (state.detectedWords && state.detectedWords.length > 0) {
+        for (const word of state.detectedWords) {
+            if (word.bbox) {
+                // Determine which cell this word belongs to
+                const wordCenterX = (word.bbox.x0 + word.bbox.x1) / 2;
+                const wordCenterY = (word.bbox.y0 + word.bbox.y1) / 2;
+                const cellWidth = gridBounds.width / 4;
+                const cellHeight = gridBounds.height / 4;
+                const col = Math.floor(wordCenterX / cellWidth);
+                const row = Math.floor(wordCenterY / cellHeight);
+                const cellIndex = row * 4 + col;
+                
+                if (cellIndex >= 0 && cellIndex < 16) {
+                    wordsByCell[cellIndex].push(word.text);
+                }
+            }
+        }
+    }
+    
+    // Draw cell numbers and word indicators
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     
@@ -476,9 +523,38 @@ function drawDebugOverlay(gridBounds) {
         
         // Draw cell number with background for visibility
         ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
-        ctx.fillRect(cellX - 15, cellY - 8, 30, 16);
+        ctx.fillRect(cellX - 15, cellY - 20, 30, 16);
         ctx.fillStyle = '#3498db';
-        ctx.fillText((i + 1).toString(), cellX, cellY);
+        ctx.font = 'bold 12px system-ui, sans-serif';
+        ctx.fillText((i + 1).toString(), cellX, cellY - 12);
+        
+        // Draw word indicator below the number
+        if (wordsByCell[i].length > 0) {
+            const wordText = wordsByCell[i].join(' ');
+            ctx.fillStyle = '#9b59b6';
+            ctx.font = '10px system-ui, sans-serif';
+            ctx.fillText(wordText, cellX, cellY + 8);
+        }
+    }
+    
+    // Draw detected word boxes in purple (optional, for debugging)
+    if (state.detectedWords && state.detectedWords.length > 0) {
+        ctx.strokeStyle = '#9b59b6'; // Purple
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]); // Solid lines
+        
+        for (const word of state.detectedWords) {
+            if (word.bbox) {
+                // Word bboxes are in cropped image coordinates (0,0 based)
+                const wordX = word.bbox.x0 * scaleX;
+                const wordY = word.bbox.y0 * scaleY;
+                const wordW = (word.bbox.x1 - word.bbox.x0) * scaleX;
+                const wordH = (word.bbox.y1 - word.bbox.y0) * scaleY;
+                
+                // Draw word bounding box
+                ctx.strokeRect(wordX, wordY, wordW, wordH);
+            }
+        }
     }
 }
 
