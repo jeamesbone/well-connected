@@ -10,6 +10,7 @@ const state = {
     selectedTiles: new Set(), // Set of "source:index" strings for selected tiles
     draggedTile: null,
     draggedSource: null, // 'grid' or 'scratchpad'
+    viewDate: null, // YYYY-MM-DD of the puzzle currently displayed
 };
 
 // DOM Elements
@@ -27,11 +28,17 @@ const elements = {
     modalClose: document.getElementById('modalClose'),
     helpBtn: document.getElementById('helpBtn'),
     helpModal: document.getElementById('helpModal'),
-    helpModalClose: document.getElementById('helpModalClose')
+    helpModalClose: document.getElementById('helpModalClose'),
+    dateLabel: document.getElementById('dateLabel'),
+    prevDayBtn: document.getElementById('prevDayBtn'),
+    nextDayBtn: document.getElementById('nextDayBtn'),
 };
 
-// Storage key
-const STORAGE_KEY = 'wellconnected_state';
+const STORAGE_PREFIX = 'wellconnected_';
+
+function storageKeyForDate(date) {
+    return `${STORAGE_PREFIX}${date}`;
+}
 
 // Initialize
 function init() {
@@ -40,27 +47,27 @@ function init() {
     setupModal();
     setupHelpModal();
     setupScratchpad();
-    loadTodayWords();
+    setupDateNav();
+    loadWordsForDate(todayDate());
 }
 
 // ==================== Local Storage ====================
 
 function saveState() {
+    if (!state.viewDate) return;
     const data = {
-        date: new Date().toLocaleDateString('en-CA'),
         tiles: state.tiles,
         scratchpad: state.scratchpad
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(storageKeyForDate(state.viewDate), JSON.stringify(data));
 }
 
-function getSavedStateForToday() {
+function getSavedStateForDate(date) {
     try {
-        const saved = localStorage.getItem(STORAGE_KEY);
+        const saved = localStorage.getItem(storageKeyForDate(date));
         if (!saved) return null;
         const data = JSON.parse(saved);
-        const today = new Date().toLocaleDateString('en-CA');
-        if (data.date === today && Array.isArray(data.tiles) && data.tiles.length === 16) {
+        if (Array.isArray(data.tiles) && data.tiles.length === 16) {
             return data;
         }
     } catch (e) {
@@ -69,40 +76,109 @@ function getSavedStateForToday() {
     return null;
 }
 
-function clearSavedState() {
-    localStorage.removeItem(STORAGE_KEY);
+function clearSavedState(date) {
+    localStorage.removeItem(storageKeyForDate(date));
 }
 
-// ==================== Today's Words ====================
+// ==================== Date Navigation ====================
 
-async function loadTodayWords() {
+const wordCache = {}; // date string -> words array
+
+function todayDate() {
+    return new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+}
+
+function shiftDate(dateStr, days) {
+    const d = new Date(`${dateStr}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    return d.toLocaleDateString('en-CA');
+}
+
+function urlForDate(date) {
+    return date === todayDate() ? 'today.json' : `archive/${date}.json`;
+}
+
+async function fetchWordsForDate(date) {
+    if (wordCache[date] === null) throw new Error('No puzzle available for this date');
+    if (wordCache[date]) return wordCache[date];
+    const res = await fetch(urlForDate(date), { cache: 'no-cache' });
+    if (!res.ok) {
+        wordCache[date] = null;
+        throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data.words) || data.words.length !== 16) throw new Error('Invalid words in puzzle file');
+    wordCache[date] = data.words;
+    return data.words;
+}
+
+async function dateFileExists(date) {
+    if (wordCache[date]) return true;
+    if (wordCache[date] === null) return false;
     try {
-        const saved = getSavedStateForToday();
+        const res = await fetch(urlForDate(date), { method: 'HEAD' });
+        if (!res.ok) wordCache[date] = null;
+        return res.ok;
+    } catch {
+        return false;
+    }
+}
+
+function setupDateNav() {
+    elements.prevDayBtn.addEventListener('click', () => {
+        loadWordsForDate(shiftDate(state.viewDate, -1));
+    });
+    elements.nextDayBtn.addEventListener('click', () => {
+        loadWordsForDate(shiftDate(state.viewDate, 1));
+    });
+}
+
+async function updateDateNav() {
+    const date = state.viewDate;
+    const today = todayDate();
+
+    const d = new Date(`${date}T00:00:00`);
+    const isToday = date === today;
+    elements.dateLabel.textContent = isToday
+        ? `Today, ${d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
+        : d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+    const [hasPrev, hasNext] = await Promise.all([
+        dateFileExists(shiftDate(date, -1)),
+        isToday ? Promise.resolve(false) : dateFileExists(shiftDate(date, 1)),
+    ]);
+    elements.prevDayBtn.style.visibility = hasPrev ? 'visible' : 'hidden';
+    elements.nextDayBtn.style.visibility = hasNext ? 'visible' : 'hidden';
+}
+
+async function loadWordsForDate(date) {
+    const cached = !!wordCache[date] || !!getSavedStateForDate(date);
+    if (!cached) {
+        elements.statusSection.hidden = false;
+        elements.statusSection.querySelector('.spinner').hidden = false;
+        elements.statusText.textContent = 'Loading puzzle...';
+        elements.gridSection.hidden = true;
+    }
+
+    try {
+        const words = await fetchWordsForDate(date);
+        const saved = getSavedStateForDate(date);
         if (saved) {
             state.tiles = saved.tiles;
             state.scratchpad = saved.scratchpad || [null, null, null, null];
-            elements.statusSection.hidden = true;
-            elements.gridSection.hidden = false;
-            renderGrid();
-            return;
+        } else {
+            state.tiles = normalizeToGrid(words);
+            state.scratchpad = [null, null, null, null];
         }
 
-        const res = await fetch('today.json', { cache: 'no-cache' });
-        if (!res.ok) throw new Error(`Failed to fetch today.json (${res.status})`);
-
-        const data = await res.json();
-        const today = new Date().toLocaleDateString('en-CA');
-        if (data.date !== today) throw new Error("today.json is not for today");
-        if (!Array.isArray(data.words) || data.words.length !== 16) throw new Error('Invalid words in today.json');
-
-        state.tiles = normalizeToGrid(data.words);
-        state.scratchpad = [null, null, null, null];
+        state.viewDate = date;
         elements.statusSection.hidden = true;
         elements.gridSection.hidden = false;
         renderGrid();
+        updateDateNav();
     } catch (err) {
         elements.statusSection.querySelector('.spinner').hidden = true;
-        elements.statusText.textContent = `Couldn't load today's puzzle. ${err.message}`;
+        elements.statusText.textContent = `Couldn't load puzzle for ${date}. ${err.message}`;
     }
 }
 
@@ -218,7 +294,7 @@ function fitAllTileText() {
 }
 
 /**
- * Scale down text to fit within a tile
+ * Scale down text to fit within a tile (text wraps naturally; only height is checked)
  */
 function fitTileText(tile) {
     const textSpan = tile.querySelector('.tile-text');
@@ -234,12 +310,10 @@ function fitTileText(tile) {
     
     const availableWidth = tile.clientWidth - paddingX;
     const availableHeight = tile.clientHeight - paddingY;
-    const textWidth = textSpan.offsetWidth;
-    const textHeight = textSpan.offsetHeight;
     
-    // Calculate scale needed to fit (with small buffer)
-    const scaleX = (availableWidth - 4) / textWidth;
-    const scaleY = (availableHeight - 2) / textHeight;
+    // scrollWidth detects horizontal overflow from long non-wrapping words
+    const scaleX = availableWidth / textSpan.scrollWidth;
+    const scaleY = (availableHeight - 4) / textSpan.offsetHeight;
     const scale = Math.min(scaleX, scaleY, 1); // Never scale up, only down
     
     if (scale < 0.99) {
