@@ -10,10 +10,23 @@ const state = {
     selectedTiles: new Set(), // Set of "source:index" strings for selected tiles
     draggedTile: null,
     draggedSource: null, // 'grid' or 'scratchpad'
+    debugVisible: false, // Debug overlay visibility
+    detectedWords: [] // All words detected by OCR for debug visualization
 };
 
 // DOM Elements
 const elements = {
+    uploadArea: document.getElementById('uploadArea'),
+    uploadMinimized: document.getElementById('uploadMinimized'),
+    expandUploadBtn: document.getElementById('expandUploadBtn'),
+    fileInput: document.getElementById('fileInput'),
+    previewContainer: document.getElementById('previewContainer'),
+    previewWrapper: document.getElementById('previewWrapper'),
+    previewImage: document.getElementById('previewImage'),
+    debugCanvas: document.getElementById('debugCanvas'),
+    debugToggle: document.getElementById('debugToggle'),
+    clearBtn: document.getElementById('clearBtn'),
+    uploadSection: document.getElementById('uploadSection'),
     statusSection: document.getElementById('statusSection'),
     statusText: document.getElementById('statusText'),
     gridSection: document.getElementById('gridSection'),
@@ -27,7 +40,9 @@ const elements = {
     modalClose: document.getElementById('modalClose'),
     helpBtn: document.getElementById('helpBtn'),
     helpModal: document.getElementById('helpModal'),
-    helpModalClose: document.getElementById('helpModalClose')
+    helpModalClose: document.getElementById('helpModalClose'),
+    todaySection: document.getElementById('todaySection'),
+    todayBtn: document.getElementById('todayBtn')
 };
 
 // Storage key
@@ -35,38 +50,48 @@ const STORAGE_KEY = 'wellconnected_state';
 
 // Initialize
 function init() {
+    setupUploadHandlers();
     setupColorPalette();
     setupShuffleButton();
     setupModal();
     setupHelpModal();
     setupScratchpad();
-    loadTodayWords();
+    setupDebugToggle();
+    loadSavedState();
+    checkTodayWords();
 }
 
 // ==================== Local Storage ====================
 
 function saveState() {
     const data = {
-        date: new Date().toLocaleDateString('en-CA'),
         tiles: state.tiles,
         scratchpad: state.scratchpad
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-function getSavedStateForToday() {
+function loadSavedState() {
     try {
         const saved = localStorage.getItem(STORAGE_KEY);
-        if (!saved) return null;
-        const data = JSON.parse(saved);
-        const today = new Date().toLocaleDateString('en-CA');
-        if (data.date === today && Array.isArray(data.tiles) && data.tiles.length === 16) {
-            return data;
+        if (saved) {
+            const data = JSON.parse(saved);
+            if (data.tiles && data.tiles.length > 0) {
+                state.tiles = data.tiles;
+                state.scratchpad = data.scratchpad || [null, null, null, null];
+                
+                // Minimize the upload section
+                elements.uploadArea.hidden = true;
+                elements.uploadMinimized.hidden = false;
+                
+                // Show the grid section
+                elements.gridSection.hidden = false;
+                renderGrid();
+            }
         }
     } catch (e) {
         console.error('Failed to load saved state:', e);
     }
-    return null;
 }
 
 function clearSavedState() {
@@ -75,38 +100,577 @@ function clearSavedState() {
 
 // ==================== Today's Words ====================
 
-async function loadTodayWords() {
+async function checkTodayWords() {
     try {
-        const saved = getSavedStateForToday();
-        if (saved) {
-            state.tiles = saved.tiles;
-            state.scratchpad = saved.scratchpad || [null, null, null, null];
-            elements.statusSection.hidden = true;
-            elements.gridSection.hidden = false;
-            renderGrid();
-            return;
-        }
-
         const res = await fetch('today.json', { cache: 'no-cache' });
-        if (!res.ok) throw new Error(`Failed to fetch today.json (${res.status})`);
+        if (!res.ok) return;
 
         const data = await res.json();
-        const today = new Date().toLocaleDateString('en-CA');
-        if (data.date !== today) throw new Error("today.json is not for today");
-        if (!Array.isArray(data.words) || data.words.length !== 16) throw new Error('Invalid words in today.json');
+        const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
 
-        state.tiles = normalizeToGrid(data.words);
-        state.scratchpad = [null, null, null, null];
-        elements.statusSection.hidden = true;
-        elements.gridSection.hidden = false;
-        renderGrid();
-    } catch (err) {
-        elements.statusSection.querySelector('.spinner').hidden = true;
-        elements.statusText.textContent = `Couldn't load today's puzzle. ${err.message}`;
+        if (data.date === today && Array.isArray(data.words) && data.words.length === 16) {
+            elements.todaySection.hidden = false;
+            elements.todayBtn.addEventListener('click', () => loadTodayWords(data.words));
+        }
+    } catch {
+        // today.json not available — silently ignore
     }
 }
 
-// ==================== Grid Utilities ====================
+function loadTodayWords(words) {
+    state.tiles = normalizeToGrid(words);
+    elements.uploadArea.hidden = true;
+    elements.uploadMinimized.hidden = false;
+    elements.gridSection.hidden = false;
+    renderGrid();
+}
+
+// ==================== Upload Handling ====================
+
+function setupUploadHandlers() {
+    // Click to upload
+    elements.uploadArea.addEventListener('click', () => {
+        elements.fileInput.click();
+    });
+
+    // File selected
+    elements.fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+        }
+    });
+
+    // Drag and drop
+    elements.uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        elements.uploadArea.classList.add('drag-over');
+    });
+
+    elements.uploadArea.addEventListener('dragleave', () => {
+        elements.uploadArea.classList.remove('drag-over');
+    });
+
+    elements.uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        elements.uploadArea.classList.remove('drag-over');
+        
+        if (e.dataTransfer.files.length > 0) {
+            handleFile(e.dataTransfer.files[0]);
+        }
+    });
+
+    // Clear button
+    elements.clearBtn.addEventListener('click', resetUpload);
+    
+    // Expand upload button (when minimized)
+    elements.expandUploadBtn.addEventListener('click', () => {
+        elements.fileInput.click();
+    });
+}
+
+function handleFile(file) {
+    if (!file.type.startsWith('image/')) {
+        alert('Please upload an image file.');
+        return;
+    }
+
+    // Show preview
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        elements.previewImage.src = e.target.result;
+        elements.uploadArea.hidden = true;
+        
+        // Set visibility based on debug state (show container when debug is on)
+        elements.previewContainer.hidden = !state.debugVisible;
+        elements.previewImage.hidden = !state.debugVisible;
+        elements.debugCanvas.hidden = !state.debugVisible;
+        
+        // Process image
+        processImage(file);
+    };
+    reader.readAsDataURL(file);
+}
+
+function resetUpload() {
+    elements.fileInput.value = '';
+    elements.previewImage.src = '';
+    elements.uploadArea.hidden = false;
+    elements.uploadMinimized.hidden = true;
+    elements.previewContainer.hidden = true;
+    elements.statusSection.hidden = true;
+    elements.gridSection.hidden = true;
+    state.tiles = [];
+    state.scratchpad = [null, null, null, null];
+    state.selectedTiles.clear();
+    state.detectedWords = [];
+    
+    // Clear saved state
+    clearSavedState();
+    
+    // Clear debug canvas
+    const ctx = elements.debugCanvas.getContext('2d');
+    ctx.clearRect(0, 0, elements.debugCanvas.width, elements.debugCanvas.height);
+}
+
+// ==================== OCR Processing ====================
+
+async function processImage(file) {
+    elements.statusSection.hidden = false;
+    elements.statusText.textContent = 'Detecting grid...';
+
+    try {
+        // Check if Tesseract is loaded
+        if (typeof Tesseract === 'undefined') {
+            throw new Error('OCR library not loaded. Please check your internet connection.');
+        }
+
+        elements.statusText.textContent = 'Detecting grid...';
+        
+        // Detect the grid region on the original image
+        const detectedBounds = await detectGridBounds(file);
+        console.log('Detected grid bounds:', detectedBounds);
+        
+        // Add padding to cover missed edges
+        const padding = 20;
+        const imageWidth = detectedBounds.imageWidth || detectedBounds.width + detectedBounds.x;
+        const imageHeight = detectedBounds.imageHeight || detectedBounds.height + detectedBounds.y;
+        
+        const paddedX = Math.max(0, detectedBounds.x - padding);
+        const paddedY = Math.max(0, detectedBounds.y - padding);
+        const paddedWidth = Math.min(
+            detectedBounds.width + (padding * 2),
+            imageWidth - paddedX
+        );
+        const paddedHeight = Math.min(
+            detectedBounds.height + (padding * 2),
+            imageHeight - paddedY
+        );
+        
+        const gridBounds = {
+            x: paddedX,
+            y: paddedY,
+            width: paddedWidth,
+            height: paddedHeight,
+            imageWidth: imageWidth,
+            imageHeight: imageHeight
+        };
+        
+        console.log('Grid bounds with padding:', gridBounds);
+        
+        // Store grid bounds for debug toggle
+        state.lastGridBounds = gridBounds;
+        
+        // Draw debug overlay showing detected bounds
+        drawDebugOverlay(gridBounds);
+
+        elements.statusText.textContent = 'Cropping image...';
+        
+        // Crop the image to the grid bounds (with padding)
+        const croppedBlob = await cropImage(file, gridBounds);
+        
+        // Update preview to show cropped image
+        elements.previewImage.src = URL.createObjectURL(croppedBlob);
+
+        elements.statusText.textContent = 'Initializing OCR...';
+
+        // Create Tesseract worker
+        const { createWorker } = Tesseract;
+        const worker = await createWorker('eng');
+        
+        elements.statusText.textContent = 'Reading text...';
+
+        // Calculate cell dimensions
+        const cellWidth = gridBounds.width / 4;
+        const cellHeight = gridBounds.height / 4;
+        console.log('[OCR] Cropped grid dimensions:', gridBounds.width, 'x', gridBounds.height);
+        console.log('[OCR] Cell dimensions:', cellWidth.toFixed(1), 'x', cellHeight.toFixed(1));
+        
+        // Run OCR on each cell individually using rectangle option
+        const words = [];
+        const totalCells = 16;
+        state.detectedWords = [];
+        
+        for (let i = 0; i < totalCells; i++) {
+            const progress = Math.round(((i + 1) / totalCells) * 100);
+            elements.statusText.textContent = `Reading text... ${progress}%`;
+            
+            const row = Math.floor(i / 4);
+            const col = i % 4;
+            const cellX = col * cellWidth;
+            const cellY = row * cellHeight;
+            
+            // Shrink rectangle by 20px on all sides to remove borders
+            const borderPadding = 20;
+            const rectX = cellX + borderPadding;
+            const rectY = cellY + borderPadding;
+            const rectWidth = cellWidth - (borderPadding * 2);
+            const rectHeight = cellHeight - (borderPadding * 2);
+            
+            console.log(`[Cell ${i + 1}/16 (Row ${row + 1}, Col ${col + 1})] Starting OCR at rectangle (${rectX.toFixed(1)}, ${rectY.toFixed(1)}, ${rectWidth.toFixed(1)}, ${rectHeight.toFixed(1)})...`);
+            
+            // Run OCR on this specific cell using rectangle option
+            const { data: result } = await worker.recognize(croppedBlob, {
+                rectangle: {
+                    top: rectY,
+                    left: rectX,
+                    width: rectWidth,
+                    height: rectHeight
+                }
+            });
+            
+            // Extract all words from this cell and concatenate them
+            let cellWords = [];
+            
+            if (!result || !result.words || result.words.length === 0) {
+                console.log(`[Cell ${i + 1}/16] No OCR result`);
+                words.push(''); // Push empty string for this cell
+            } else {
+
+            console.log(`[Cell ${i + 1}/16] Found ${result.words.length} word(s):`, result.words.map(w => w.text));
+            // Collect all words from the cell
+            for (const word of result.words) {
+                const cleaned = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
+                if (cleaned.length >= 2) {
+                    cellWords.push(cleaned.toUpperCase());
+                }
+                // Store for debug overlay (adjust bbox to be relative to full cropped image)
+                if (word.bbox) {
+                    state.detectedWords.push({
+                        text: cleaned.toUpperCase(),
+                        bbox: {
+                            x0: word.bbox.x0 + rectX,
+                            y0: word.bbox.y0 + rectY,
+                            x1: word.bbox.x1 + rectX,
+                            y1: word.bbox.y1 + rectY
+                        }
+                    });
+                }
+            }
+            
+                // Concatenate all words with spaces
+                const cellWord = cellWords.join(' ');
+                console.log(`[Cell ${i + 1}/16] Final result: "${cellWord}"`);
+                words.push(cellWord);
+            }
+        }
+        
+        // Terminate worker
+        await worker.terminate();
+        
+        elements.statusText.textContent = 'Extracting tiles...';
+        
+        // Filter out empty words and store detected words for debug
+        const detectedWords = [];
+        const validWords = words.filter((word, index) => {
+            if (word && word.length >= 2) {
+                detectedWords.push({
+                    text: word,
+                    centerX: (index % 4) * (gridBounds.width / 4) + (gridBounds.width / 8),
+                    centerY: Math.floor(index / 4) * (gridBounds.height / 4) + (gridBounds.height / 8),
+                    bbox: {
+                        x0: (index % 4) * (gridBounds.width / 4),
+                        y0: Math.floor(index / 4) * (gridBounds.height / 4),
+                        x1: ((index % 4) + 1) * (gridBounds.width / 4),
+                        y1: (Math.floor(index / 4) + 1) * (gridBounds.height / 4)
+                    }
+                });
+                return true;
+            }
+            return false;
+        });
+        
+        state.detectedWords = detectedWords;
+        
+        // Update preview to show processed image
+        elements.previewImage.src = URL.createObjectURL(croppedBlob);
+
+        // Redraw debug overlay with word boxes
+        if (state.debugVisible && state.lastGridBounds) {
+            drawDebugOverlay(state.lastGridBounds);
+        }
+        
+        if (validWords.length === 0) {
+            throw new Error('No words found. Please ensure the image shows a Connections puzzle grid.');
+        }
+
+        // Pad or trim to 16 tiles (words are already in grid order)
+        state.tiles = normalizeToGrid(validWords);
+        
+        elements.statusSection.hidden = true;
+        elements.gridSection.hidden = false;
+        
+        renderGrid();
+
+    } catch (error) {
+        console.error('OCR Error:', error);
+        elements.statusText.textContent = `Error: ${error.message}`;
+        
+        // Show manual entry fallback after a delay
+        setTimeout(() => {
+            if (confirm('OCR failed. Would you like to enter words manually?')) {
+                showManualEntry();
+            }
+        }, 1500);
+    }
+}
+
+
+/**
+ * Draw a debug overlay showing the detected grid bounds
+ */
+function drawDebugOverlay(gridBounds) {
+    const canvas = elements.debugCanvas;
+    const img = elements.previewImage;
+    
+    // Wait for image to load to get display dimensions
+    if (!img.complete) {
+        img.onload = () => drawDebugOverlay(gridBounds);
+        return;
+    }
+    
+    // Get the actual displayed dimensions of the image
+    const displayWidth = img.clientWidth;
+    const displayHeight = img.clientHeight;
+    
+    // Get the natural (actual) dimensions of the image
+    // Since preview now shows cropped image, use cropped dimensions (gridBounds.width/height)
+    const naturalWidth = gridBounds.width || img.naturalWidth || img.width;
+    const naturalHeight = gridBounds.height || img.naturalHeight || img.height;
+    
+    // Set canvas size to match displayed image (use device pixel ratio for crisp rendering)
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = displayWidth * dpr;
+    canvas.height = displayHeight * dpr;
+    canvas.style.width = displayWidth + 'px';
+    canvas.style.height = displayHeight + 'px';
+    
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, displayWidth, displayHeight);
+    
+    // Scale factor from original image natural size to displayed size
+    const scaleX = displayWidth / naturalWidth;
+    const scaleY = displayHeight / naturalHeight;
+    
+    console.log('[Debug Overlay] Image dimensions:', {
+        natural: { width: naturalWidth, height: naturalHeight },
+        displayed: { width: displayWidth, height: displayHeight },
+        scale: { x: scaleX, y: scaleY },
+        gridBounds: gridBounds
+    });
+    
+    // Draw cell boundaries (4x4 grid = 16 cells)
+    // Grid is in cropped image coordinates, starting at 0,0
+    const gridX = 0;
+    const gridY = 0;
+    const gridW = gridBounds.width * scaleX;
+    const gridH = gridBounds.height * scaleY;
+    const cellW = gridW / 4;
+    const cellH = gridH / 4;
+    
+    ctx.strokeStyle = '#3498db'; // Blue
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]); // Dashed lines
+    
+    // Draw vertical lines (3 lines to divide into 4 columns)
+    for (let i = 1; i < 4; i++) {
+        const x = gridX + (i * cellW);
+        ctx.beginPath();
+        ctx.moveTo(x, gridY);
+        ctx.lineTo(x, gridY + gridH);
+        ctx.stroke();
+    }
+    
+    // Draw horizontal lines (3 lines to divide into 4 rows)
+    for (let i = 1; i < 4; i++) {
+        const y = gridY + (i * cellH);
+        ctx.beginPath();
+        ctx.moveTo(gridX, y);
+        ctx.lineTo(gridX + gridW, y);
+        ctx.stroke();
+    }
+    
+    // Group words by cell for display
+    const wordsByCell = Array(16).fill(null).map(() => []);
+    if (state.detectedWords && state.detectedWords.length > 0) {
+        for (const word of state.detectedWords) {
+            if (word.bbox) {
+                // Determine which cell this word belongs to
+                const wordCenterX = (word.bbox.x0 + word.bbox.x1) / 2;
+                const wordCenterY = (word.bbox.y0 + word.bbox.y1) / 2;
+                const cellWidth = gridBounds.width / 4;
+                const cellHeight = gridBounds.height / 4;
+                const col = Math.floor(wordCenterX / cellWidth);
+                const row = Math.floor(wordCenterY / cellHeight);
+                const cellIndex = row * 4 + col;
+                
+                if (cellIndex >= 0 && cellIndex < 16) {
+                    wordsByCell[cellIndex].push(word.text);
+                }
+            }
+        }
+    }
+    
+    // Draw cell numbers and word indicators
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    
+    for (let i = 0; i < 16; i++) {
+        const row = Math.floor(i / 4);
+        const col = i % 4;
+        const cellX = gridX + (col * cellW) + (cellW / 2);
+        const cellY = gridY + (row * cellH) + (cellH / 2);
+        
+        // Draw cell number with background for visibility
+        ctx.fillStyle = 'rgba(52, 152, 219, 0.3)';
+        ctx.fillRect(cellX - 15, cellY - 20, 30, 16);
+        ctx.fillStyle = '#3498db';
+        ctx.font = 'bold 12px system-ui, sans-serif';
+        ctx.fillText((i + 1).toString(), cellX, cellY - 12);
+        
+        // Draw word indicator below the number
+        if (wordsByCell[i].length > 0) {
+            const wordText = wordsByCell[i].join(' ');
+            ctx.fillStyle = '#9b59b6';
+            ctx.font = '10px system-ui, sans-serif';
+            ctx.fillText(wordText, cellX, cellY + 8);
+        }
+    }
+    
+    // Draw detected word boxes in purple (optional, for debugging)
+    if (state.detectedWords && state.detectedWords.length > 0) {
+        ctx.strokeStyle = '#9b59b6'; // Purple
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]); // Solid lines
+        
+        for (const word of state.detectedWords) {
+            if (word.bbox) {
+                // Word bboxes are in cropped image coordinates (0,0 based)
+                const wordX = word.bbox.x0 * scaleX;
+                const wordY = word.bbox.y0 * scaleY;
+                const wordW = (word.bbox.x1 - word.bbox.x0) * scaleX;
+                const wordH = (word.bbox.y1 - word.bbox.y0) * scaleY;
+                
+                // Draw word bounding box
+                ctx.strokeRect(wordX, wordY, wordW, wordH);
+            }
+        }
+    }
+}
+
+/**
+ * Extract words that fall within the detected grid bounds.
+ */
+function extractGridWords(ocrData, gridBounds) {
+    const allWords = [];
+    
+    // Tesseract.js returns coordinates in the original image coordinate system
+    // We should NOT scale - the bbox coordinates are already in image pixel coordinates
+    // Use scale of 1.0 (no scaling)
+    const finalScaleX = 1.0;
+    const finalScaleY = 1.0;
+    
+    console.log('Image dimensions:', gridBounds.imageWidth, 'x', gridBounds.imageHeight);
+    console.log('Grid bounds:', gridBounds.x, gridBounds.y, gridBounds.width, gridBounds.height);
+    
+    // Collect all words with their positions for debugging
+    const allDetectedWords = [];
+    
+    for (const line of ocrData.lines || []) {
+        for (const word of line.words || []) {
+            const text = word.text.replace(/[^a-zA-Z0-9'-\s]/g, '').trim();
+            if (text.length >= 2 && word.bbox) {
+                // Scale OCR coordinates to original image coordinates
+                const wordCenterX = ((word.bbox.x0 + word.bbox.x1) / 2) * finalScaleX;
+                const wordCenterY = ((word.bbox.y0 + word.bbox.y1) / 2) * finalScaleY;
+                
+                allDetectedWords.push({
+                    text: text.toUpperCase(),
+                    centerX: wordCenterX,
+                    centerY: wordCenterY,
+                    bbox: word.bbox
+                });
+                
+                // Check if word center falls within grid bounds
+                const inGrid = (
+                    wordCenterX >= gridBounds.x &&
+                    wordCenterX <= gridBounds.x + gridBounds.width &&
+                    wordCenterY >= gridBounds.y &&
+                    wordCenterY <= gridBounds.y + gridBounds.height
+                );
+                
+                if (inGrid) {
+                    allWords.push({
+                        text: text.toUpperCase(),
+                        bbox: word.bbox,
+                        confidence: word.confidence,
+                        centerY: wordCenterY,
+                        centerX: wordCenterX,
+                        height: (word.bbox.y1 - word.bbox.y0) * finalScaleY
+                    });
+                }
+            }
+        }
+    }
+    
+    console.log('Total words detected:', allDetectedWords.length);
+    console.log('Words in grid:', allWords.length);
+    if (allDetectedWords.length > 0 && allWords.length === 0) {
+        console.warn('No words found in grid bounds! Sample word positions:', 
+            allDetectedWords.slice(0, 5).map(w => `${w.text} at (${w.centerX.toFixed(0)}, ${w.centerY.toFixed(0)})`));
+    }
+    
+    // Store detected words for debug visualization
+    state.detectedWords = allDetectedWords;
+    
+    if (allWords.length === 0) return [];
+    
+    // Group words into rows and sort in reading order
+    const rows = groupIntoRows(allWords);
+    
+    // Extract words in reading order (top to bottom, left to right)
+    const gridWords = [];
+    for (const row of rows) {
+        // Sort row by X position (left to right)
+        row.sort((a, b) => a.centerX - b.centerX);
+        gridWords.push(...row.map(w => w.text));
+    }
+    
+    return gridWords.slice(0, 16);
+}
+
+/**
+ * Group words into rows based on their Y position
+ */
+function groupIntoRows(words) {
+    if (words.length === 0) return [];
+    
+    const sorted = [...words].sort((a, b) => a.centerY - b.centerY);
+    const rows = [];
+    let currentRow = [sorted[0]];
+    
+    for (let i = 1; i < sorted.length; i++) {
+        const word = sorted[i];
+        const prevWord = sorted[i - 1];
+        
+        // If Y difference is small, same row; otherwise new row
+        // Use the height as a threshold for row grouping
+        const threshold = prevWord.height * 0.8;
+        
+        if (Math.abs(word.centerY - prevWord.centerY) < threshold) {
+            currentRow.push(word);
+        } else {
+            rows.push(currentRow);
+            currentRow = [word];
+        }
+    }
+    
+    if (currentRow.length > 0) {
+        rows.push(currentRow);
+    }
+    
+    return rows;
+}
 
 function normalizeToGrid(words) {
     // Take first 16 words, or pad with placeholders
@@ -121,6 +685,26 @@ function normalizeToGrid(words) {
         word: word,
         draftColor: null
     }));
+}
+
+function showManualEntry() {
+    const input = prompt(
+        'Enter 16 words separated by commas:',
+        'WORD1, WORD2, WORD3, WORD4, WORD5, WORD6, WORD7, WORD8, WORD9, WORD10, WORD11, WORD12, WORD13, WORD14, WORD15, WORD16'
+    );
+    
+    if (input) {
+        const words = input.split(',')
+            .map(w => w.trim().toUpperCase())
+            .filter(w => w.length > 0);
+        
+        state.tiles = normalizeToGrid(words);
+        elements.statusSection.hidden = true;
+        elements.gridSection.hidden = false;
+        renderGrid();
+    } else {
+        resetUpload();
+    }
 }
 
 // ==================== Grid Rendering ====================
@@ -792,6 +1376,27 @@ function setupHelpModal() {
     });
 }
 
+function setupDebugToggle() {
+    if (!elements.debugToggle) return;
+    
+    elements.debugToggle.addEventListener('click', () => {
+        state.debugVisible = !state.debugVisible;
+        
+        // Show/hide preview container and both image/canvas together
+        // When debug is ON: show all, when OFF: hide all
+        elements.previewContainer.hidden = !state.debugVisible;
+        elements.previewImage.hidden = !state.debugVisible;
+        elements.debugCanvas.hidden = !state.debugVisible;
+        
+        // Redraw debug overlay if we have grid bounds stored and debug is visible
+        if (state.debugVisible && state.lastGridBounds) {
+            drawDebugOverlay(state.lastGridBounds);
+        }
+    });
+    
+    // Initialize canvas as hidden (preview image will be shown when file is loaded)
+    elements.debugCanvas.hidden = true;
+}
 
 function closeHelpModal() {
     elements.helpModal.hidden = true;

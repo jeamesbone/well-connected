@@ -10,14 +10,49 @@
     <div class="app">
         <header class="header">
             <h1>Well Connected</h1>
+            <button class="debug-toggle" id="debugToggle" title="Toggle debug overlay"></button>
         </header>
 
         <main class="main">
-            <!-- Loading / Error State -->
-            <section class="status-section" id="statusSection">
+            <!-- Upload Section -->
+            <section class="upload-section" id="uploadSection">
+                <!-- Minimized upload bar (shown when there's saved data) -->
+                <div class="upload-minimized" id="uploadMinimized" hidden>
+                    <span class="upload-minimized-text">Upload new puzzle</span>
+                    <button class="btn btn-small" id="expandUploadBtn">Choose Image</button>
+                </div>
+                
+                <!-- Full upload area -->
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17,8 12,3 7,8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                    </div>
+                    <p class="upload-text">Drop your Connections screenshot here</p>
+                    <p class="upload-subtext">or click to browse</p>
+                    <input type="file" id="fileInput" accept="image/*" hidden>
+                    <div class="today-section" id="todaySection" hidden>
+                        <div class="today-divider"><span>or</span></div>
+                        <button class="btn btn-today" id="todayBtn">Load Today's Puzzle</button>
+                    </div>
+                </div>
+                <div class="preview-container" id="previewContainer" hidden>
+                    <div class="preview-wrapper" id="previewWrapper">
+                        <img id="previewImage" alt="Preview">
+                        <canvas id="debugCanvas"></canvas>
+                    </div>
+                    <button class="btn btn-secondary" id="clearBtn">Choose Different Image</button>
+                </div>
+            </section>
+
+            <!-- Processing Status -->
+            <section class="status-section" id="statusSection" hidden>
                 <div class="status-indicator">
                     <div class="spinner"></div>
-                    <span id="statusText">Loading today's puzzle...</span>
+                    <span id="statusText">Processing image...</span>
                 </div>
             </section>
 
@@ -64,6 +99,7 @@
                         <div class="scratchpad-slot" data-slot="3"></div>
                     </div>
                 </div>
+
             </section>
 
             <!-- Help Modal -->
@@ -96,6 +132,9 @@
         </footer>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="image-processing.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
+
