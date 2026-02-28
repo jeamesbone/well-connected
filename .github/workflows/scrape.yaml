@@ -2,8 +2,8 @@ name: Scrape Connections Words
 
 on:
   schedule:
-    # 5:10 AM UTC daily — 10 minutes after midnight ET (UTC-5 in winter, UTC-4 in summer)
-    - cron: '10 5 * * *'
+    # 12:10 UTC daily — 10 minutes after midnight in GMT-12 (UTC-12)
+    - cron: '10 12 * * *'
   workflow_dispatch:
 
 jobs:

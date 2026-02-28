@@ -84,14 +84,20 @@ function clearSavedState(date) {
 
 const wordCache = {}; // date string -> words array
 
+function formatDateKey(d) {
+    const parts = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+    const { year, month, day } = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+    return `${year}-${month}-${day}`;
+}
+
 function todayDate() {
-    return new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+    return formatDateKey(new Date());
 }
 
 function shiftDate(dateStr, days) {
     const d = new Date(`${dateStr}T00:00:00`);
     d.setDate(d.getDate() + days);
-    return d.toLocaleDateString('en-CA');
+    return formatDateKey(d);
 }
 
 function urlForDate(date) {
@@ -139,9 +145,10 @@ async function updateDateNav() {
 
     const d = new Date(`${date}T00:00:00`);
     const isToday = date === today;
+    const locale = undefined; // use user's locale
     elements.dateLabel.textContent = isToday
-        ? `Today, ${d.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
-        : d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+        ? `Today, ${d.toLocaleDateString(locale, { month: 'long', day: 'numeric' })}`
+        : d.toLocaleDateString(locale, { weekday: 'long', month: 'long', day: 'numeric' });
 
     const [hasPrev, hasNext] = await Promise.all([
         dateFileExists(shiftDate(date, -1)),
