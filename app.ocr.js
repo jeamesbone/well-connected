@@ -102,18 +102,17 @@ function clearSavedState() {
 
 async function checkTodayWords() {
     try {
-        const res = await fetch('today.json', { cache: 'no-cache' });
+        const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
+        const res = await fetch(`archive/${today}.json`, { cache: 'no-cache' });
         if (!res.ok) return;
 
         const data = await res.json();
-        const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local time
-
         if (data.date === today && Array.isArray(data.words) && data.words.length === 16) {
             elements.todaySection.hidden = false;
             elements.todayBtn.addEventListener('click', () => loadTodayWords(data.words));
         }
     } catch {
-        // today.json not available — silently ignore
+        // No puzzle for today — silently ignore
     }
 }
 

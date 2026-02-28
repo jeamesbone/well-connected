@@ -1,40 +1,29 @@
 import json
-import os
-from datetime import date
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
 from selenium import webdriver
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.by import By
 
-OUTPUT_FILE = "today.json"
+# All puzzle files live in archive, keyed by date in earliest timezone (UTC-12)
 ARCHIVE_DIR = Path("archive")
-
-
-def archive_existing():
-    """Move today.json to library/{date}.json if it exists."""
-    if not os.path.exists(OUTPUT_FILE):
-        return
-    with open(OUTPUT_FILE) as f:
-        existing = json.load(f)
-    existing_date = existing.get("date")
-    if not existing_date:
-        return
-    ARCHIVE_DIR.mkdir(exist_ok=True)
-    dest = ARCHIVE_DIR / f"{existing_date}.json"
-    os.replace(OUTPUT_FILE, dest)
-    print(f"Archived {OUTPUT_FILE} → {dest}")
+TZ_EARLIEST = "Etc/GMT+12"
 
 
 def scrape_words():
-    archive_existing()
+    # Run in earliest possible timezone (UTC-12, Baker Island) so date rolls over last
 
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(f"--timezone={TZ_EARLIEST}")
 
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(30)
+    driver.execute_cdp_cmd("Emulation.setTimezoneOverride", {"timezoneId": TZ_EARLIEST})
 
     try:
         driver.get("https://www.nytimes.com/games/connections")
@@ -56,15 +45,19 @@ def scrape_words():
 
         word_values = [w.get_property("value").upper() for w in words]
 
+        # Use earliest timezone so "today" is consistent and we scrape at the earliest moment
+        puzzle_date = datetime.now(ZoneInfo(TZ_EARLIEST)).date().isoformat()
         data = {
-            "date": date.today().isoformat(),
+            "date": puzzle_date,
             "words": word_values,
         }
 
-        with open(OUTPUT_FILE, "w") as f:
+        ARCHIVE_DIR.mkdir(exist_ok=True)
+        out_path = ARCHIVE_DIR / f"{puzzle_date}.json"
+        with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
 
-        print(f"Wrote {len(word_values)} words to {OUTPUT_FILE}: {word_values}")
+        print(f"Wrote {len(word_values)} words to {out_path}: {word_values}")
         return word_values
 
     finally:

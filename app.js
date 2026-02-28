@@ -95,7 +95,7 @@ function shiftDate(dateStr, days) {
 }
 
 function urlForDate(date) {
-    return date === todayDate() ? 'today.json' : `archive/${date}.json`;
+    return `archive/${date}.json`;
 }
 
 async function fetchWordsForDate(date) {
