@@ -29,5 +29,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add today.json archive/
-          git diff --staged --quiet || (git commit -m "chore: update today's connections words" && git push)
+          git add archive/
+          NEW_FILE=$(git status -s archive/ | head -1 | awk '{print $2}')
+          DATE=$(basename "$NEW_FILE" .json)
+          git diff --staged --quiet || (git commit -m "chore: add connections words for $DATE" && git push)
