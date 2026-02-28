@@ -9,7 +9,7 @@ from selenium.webdriver.common.by import By
 
 # All puzzle files live in archive, keyed by date in earliest timezone (UTC-12)
 ARCHIVE_DIR = Path("archive")
-TZ_EARLIEST = "Etc/GMT+12"
+TZ_EARLIEST = "Etc/GMT-12"
 
 
 def scrape_words():
