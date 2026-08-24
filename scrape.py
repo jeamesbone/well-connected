@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from selenium import webdriver
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
 
 # All puzzle files live in archive, keyed by date in earliest timezone (UTC-12)
 ARCHIVE_DIR = Path("archive")
@@ -28,8 +29,19 @@ def scrape_words():
     try:
         driver.get("https://www.nytimes.com/games/connections")
 
-        play_button = driver.find_element(
-            By.XPATH, "//button[@data-testid='moment-btn-play']"
+        try:
+            reject_cookies = WebDriverWait(driver, timeout=10).until(
+                lambda d: next(
+                    (b for b in d.find_elements(By.ID, "fides-reject-all-button") if b.is_displayed()),
+                    False,
+                )
+            )
+            reject_cookies.click()
+        except TimeoutException:
+            pass
+
+        play_button = WebDriverWait(driver, timeout=10).until(
+            lambda d: d.find_element(By.XPATH, "//button[@data-testid='moment-btn-play']")
         )
         play_button.click()
 
