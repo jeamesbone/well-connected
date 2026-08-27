@@ -10,7 +10,9 @@ from selenium.common.exceptions import TimeoutException
 
 # All puzzle files live in archive, keyed by date in earliest timezone (UTC-12)
 ARCHIVE_DIR = Path("archive")
-TZ_EARLIEST = "Etc/GMT-12"
+# IANA/Etc zone names use POSIX-inverted signs: "Etc/GMT-12" is actually UTC+12.
+# UTC-12 (Baker Island) is "Etc/GMT+12".
+TZ_EARLIEST = "Etc/GMT+12"
 
 
 def scrape_words():
