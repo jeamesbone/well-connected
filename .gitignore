@@ -72,3 +72,8 @@ out/
 # Yarn Integrity file
 .yarn-integrity
 
+# Python
+__pycache__/
+*.pyc
+.venv/
+
