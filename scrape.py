@@ -8,15 +8,21 @@ from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import TimeoutException
 
-# All puzzle files live in archive, keyed by date in earliest timezone (UTC-12)
 ARCHIVE_DIR = Path("archive")
-# IANA/Etc zone names use POSIX-inverted signs: "Etc/GMT-12" is actually UTC+12.
-# UTC-12 (Baker Island) is "Etc/GMT+12".
-TZ_EARLIEST = "Etc/GMT+12"
+
+# NYT rolls the puzzle over at midnight in the browser's local timezone, so we
+# emulate a far-eastern zone to grab each puzzle as soon as it is published.
+#
+# Careful: Etc/GMT zone names carry POSIX-inverted signs, so "Etc/GMT-12" is
+# UTC+12 (a first-to-roll-over zone), NOT UTC-12. That inversion is intentional
+# here -- do not "correct" the sign. Paired with the 12:10 UTC cron in
+# .github/workflows/scrape.yaml, this lands at 00:10 local: a 10-minute buffer
+# after rollover. Files are keyed by that same local date.
+TZ_EARLIEST = "Etc/GMT-12"
 
 
 def scrape_words():
-    # Run in earliest possible timezone (UTC-12, Baker Island) so date rolls over last
+    # Run in a first-to-roll-over timezone so we scrape shortly after publication
 
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
