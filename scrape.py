@@ -21,6 +21,43 @@ ARCHIVE_DIR = Path("archive")
 TZ_EARLIEST = "Etc/GMT-12"
 
 
+def _visible_cards(driver):
+    """Wait condition: all 16 puzzle cards present and rendered, else falsy."""
+    cards = driver.find_elements(By.XPATH, "//input[@data-testid='card-input']")
+    if len(cards) == 16 and all(c.is_displayed() for c in cards):
+        return cards
+    return False
+
+
+def _open_board(driver, timeout=20):
+    """Click play and return the 16 card inputs once the board has rendered.
+
+    The board renders asynchronously, so the cards are not in the DOM yet when
+    click() returns -- reading them immediately is a race. The click can also
+    land before the handler is bound, in which case the board never opens and
+    waiting alone cannot recover, so we re-click once before giving up.
+    """
+    play = WebDriverWait(driver, timeout=10).until(
+        lambda d: d.find_element(By.XPATH, "//button[@data-testid='moment-btn-play']")
+    )
+    play.click()
+
+    for attempt in range(2):
+        try:
+            return WebDriverWait(driver, timeout=timeout).until(_visible_cards)
+        except TimeoutException:
+            if attempt == 0:
+                try:
+                    driver.find_element(
+                        By.XPATH, "//button[@data-testid='moment-btn-play']"
+                    ).click()
+                except Exception:
+                    pass
+
+    found = len(driver.find_elements(By.XPATH, "//input[@data-testid='card-input']"))
+    raise Exception(f"Board did not render 16 cards after clicking play (found {found})")
+
+
 def scrape_words():
     # Run in a first-to-roll-over timezone so we scrape shortly after publication
 
@@ -48,20 +85,7 @@ def scrape_words():
         except TimeoutException:
             pass
 
-        play_button = WebDriverWait(driver, timeout=10).until(
-            lambda d: d.find_element(By.XPATH, "//button[@data-testid='moment-btn-play']")
-        )
-        play_button.click()
-
-        first_word = driver.find_element(
-            By.XPATH, "//input[@data-testid='card-input']"
-        )
-        WebDriverWait(driver, timeout=10).until(lambda _: first_word.is_displayed())
-
-        words = driver.find_elements(By.XPATH, "//input[@data-testid='card-input']")
-
-        if len(words) != 16:
-            raise Exception(f"Expected 16 words, got {len(words)}")
+        words = _open_board(driver)
 
         word_values = [w.get_property("value").upper() for w in words]
 
