@@ -25,6 +25,17 @@ jobs:
       - name: Run scraper
         run: uv run python main.py
 
+      # The page is the only thing that can explain a failed scrape, and it is
+      # gone once the runner is torn down. Keep it.
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-failure-${{ github.run_number }}
+          path: debug/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Commit words file
         run: |
           git config user.name "github-actions[bot]"

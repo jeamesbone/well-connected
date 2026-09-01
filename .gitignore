@@ -77,3 +77,6 @@ __pycache__/
 *.pyc
 .venv/
 
+
+# Scraper failure diagnostics (uploaded as a CI artifact, not committed)
+debug/
