@@ -24,6 +24,15 @@ TZ_EARLIEST = "Etc/GMT-12"
 CARD_XPATH = "//input[@data-testid='card-input']"
 PLAY_XPATH = "//button[@data-testid='moment-btn-play']"
 
+# Clicking play does not always land on the board: an ad interstitial can take
+# its place, offering "Continue to Connections" (beside a countdown) and only
+# rendering the board once that is clicked. Matched on the label rather than a
+# data-testid because the interstitial's markup is ad-driven and varies.
+AD_CONTINUE_XPATH = (
+    "//*[self::button or self::a or @role='button']"
+    "[contains(normalize-space(.), 'Continue to')]"
+)
+
 # Written on failure and uploaded by the workflow, so a failed run can be
 # diagnosed from what the page actually was rather than by guesswork.
 DEBUG_DIR = Path("debug")
@@ -65,6 +74,33 @@ def _cards_in_iframes(driver):
     return None
 
 
+def _dismiss_ad_interstitial(driver):
+    """Click through an ad interstitial covering the board, if one is up.
+
+    Returns whether anything was clicked, so the caller can tell an interstitial
+    it has just cleared from a board that is failing to open for other reasons.
+    """
+    buttons = [
+        b for b in driver.find_elements(By.XPATH, AD_CONTINUE_XPATH) if b.is_displayed()
+    ]
+    if not buttons:
+        return False
+
+    # Ancestors of the button carry the same text and come first in document
+    # order, so the last match is the button itself.
+    button = buttons[-1]
+    try:
+        button.click()
+    except Exception:
+        # The interstitial lays its own overlay over the page, which can
+        # swallow a real click; the synthetic one still reaches the handler.
+        try:
+            driver.execute_script("arguments[0].click();", button)
+        except Exception:
+            return False
+    return True
+
+
 def _describe_page(driver):
     """Summarise what the page actually is, for the failure message."""
     bits = []
@@ -73,6 +109,9 @@ def _describe_page(driver):
         bits.append(f"title={driver.title!r}")
         bits.append(f"iframes={len(driver.find_elements(By.TAG_NAME, 'iframe'))}")
         bits.append(f"play_buttons={len(driver.find_elements(By.XPATH, PLAY_XPATH))}")
+        bits.append(
+            f"ad_continue={len(driver.find_elements(By.XPATH, AD_CONTINUE_XPATH))}"
+        )
         bits.append(
             "consent="
             f"{len(driver.find_elements(By.ID, 'fides-reject-all-button'))}"
@@ -102,20 +141,27 @@ def _open_board(driver, timeout=20):
     """Click play and return the 16 card inputs once the board has rendered.
 
     The board renders asynchronously, so the cards are not in the DOM yet when
-    click() returns -- reading them immediately is a race. The click can also
-    land before the handler is bound, in which case the board never opens and
-    waiting alone cannot recover, so we re-click once before giving up.
+    click() returns -- reading them immediately is a race. Two other things stop
+    the board from opening at all, and neither recovers by waiting: the click
+    can land before the handler is bound, and an ad interstitial can appear in
+    the board's place. So each timeout is followed by an attempt to clear
+    whichever of those is in the way, and then another wait.
     """
     play = WebDriverWait(driver, timeout=10).until(
         lambda d: d.find_element(By.XPATH, PLAY_XPATH)
     )
     play.click()
 
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             return WebDriverWait(driver, timeout=timeout).until(_visible_cards)
         except TimeoutException:
-            if attempt == 0:
+            if attempt == 2:
+                break
+            # Once play has been clicked an interstitial is the likelier cause,
+            # and re-clicking play underneath one does nothing, so the re-click
+            # is only worth trying when there is no interstitial to clear.
+            if not _dismiss_ad_interstitial(driver):
                 try:
                     driver.find_element(By.XPATH, PLAY_XPATH).click()
                 except Exception:
