@@ -41,6 +41,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add archive/
-          NEW_FILE=$(git status -s archive/ | head -1 | awk '{print $2}')
-          DATE=$(basename "$NEW_FILE" .json)
-          git diff --staged --quiet || (git commit -m "chore: add connections words for $DATE" && git push)
+
+          if git diff --staged --quiet; then
+            echo "Archive unchanged -- nothing to commit."
+            exit 0
+          fi
+
+          DATE=$(basename "$(git diff --staged --name-only | head -1)" .json)
+          git commit -m "chore: add connections words for $DATE"
+
+          # The checkout can be behind by the time we push: run 207 lost a
+          # puzzle to "! [rejected] main -> main (fetch first)". Rebase onto
+          # whatever landed and retry rather than dropping the scrape.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "Pushed $DATE on attempt $attempt."
+              exit 0
+            fi
+            echo "Push rejected (attempt $attempt); rebasing onto origin/main."
+            git pull --rebase origin main
+          done
+
+          echo "Could not push $DATE after 3 attempts." >&2
+          exit 1
