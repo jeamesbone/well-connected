@@ -180,6 +180,16 @@ def _open_board(driver, timeout=20):
     )
 
 
+def puzzle_date():
+    """Today's archive key, in the first-to-roll-over timezone."""
+    return datetime.now(ZoneInfo(TZ_EARLIEST)).date().isoformat()
+
+
+def archive_path(date=None):
+    """Where the given (default: current) puzzle date is archived."""
+    return ARCHIVE_DIR / f"{date or puzzle_date()}.json"
+
+
 def scrape_words():
     # Run in a first-to-roll-over timezone so we scrape shortly after publication
 
@@ -212,14 +222,14 @@ def scrape_words():
         word_values = [w.get_property("value").upper() for w in words]
 
         # Use earliest timezone so "today" is consistent and we scrape at the earliest moment
-        puzzle_date = datetime.now(ZoneInfo(TZ_EARLIEST)).date().isoformat()
+        date = puzzle_date()
         data = {
-            "date": puzzle_date,
+            "date": date,
             "words": word_values,
         }
 
         ARCHIVE_DIR.mkdir(exist_ok=True)
-        out_path = ARCHIVE_DIR / f"{puzzle_date}.json"
+        out_path = archive_path(date)
         with open(out_path, "w") as f:
             json.dump(data, f, indent=2)
 

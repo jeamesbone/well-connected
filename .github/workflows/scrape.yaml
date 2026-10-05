@@ -2,9 +2,22 @@ name: Scrape Connections Words
 
 on:
   schedule:
-    # 12:10 UTC daily — 10 minutes after midnight in GMT-12 (UTC-12)
+    # Primary: 12:10 UTC is 00:10 in UTC+12, a 10-minute buffer after the
+    # puzzle rolls over in a first-to-roll-over zone. (TZ_EARLIEST in scrape.py
+    # is "Etc/GMT-12", which is UTC+12 -- the sign inversion is deliberate.)
     - cron: '10 12 * * *'
+    # Retry, 12 hours later. Every instant in [12:00 UTC, 12:00 UTC next day)
+    # maps to the same archive date, so this writes the same file the primary
+    # would have. A transient failure -- an unavailable runner, a rejected
+    # push, a page that will not render -- then costs a retry instead of the
+    # day's puzzle. It no-ops when the primary already succeeded.
+    - cron: '10 0 * * *'
   workflow_dispatch:
+
+# The two schedules target the same file, so never let them overlap.
+concurrency:
+  group: scrape
+  cancel-in-progress: false
 
 jobs:
   scrape:
